@@ -532,11 +532,17 @@ def _distro_meta(d: Distro) -> dict:
     }
 
 
-def emit_json(rows, left, right, counts, out) -> None:
+def emit_json(rows, left, right, counts, out, totals) -> None:
     json.dump(
         {
             "left": _distro_meta(left),
             "right": _distro_meta(right),
+            "totals": {
+                "source_packages": totals["total"],
+                left.key: totals["left"],
+                right.key: totals["right"],
+                "in_both": totals["both"],
+            },
             "summary": counts,
             "packages": rows,
         },
@@ -578,7 +584,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   header { display: flex; align-items: baseline; justify-content: space-between;
            gap: 1rem; flex-wrap: wrap; }
   h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  p.sub { color: var(--muted); margin: 0 0 1.5rem; }
+  p.sub { color: var(--muted); margin: 0 0 .35rem; }
+  p.sub strong { color: var(--fg); }
+  p.breakdown { margin-bottom: 1.5rem; }
+  p.breakdown span { font-weight: 600; }
   a { color: var(--accent); text-underline-offset: 2px; }
   a:hover { color: var(--plum-purple); }
   footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 2px solid var(--geeko-green);
@@ -618,6 +627,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <p><a href="__PROJECT__#readme">README</a> · <a href="__PROJECT__">source on GitHub</a></p>
 </header>
 <p class="sub">__SUB__</p>
+<p class="sub breakdown">__BREAKDOWN__</p>
 <div class="bar">
   <input id="q" type="search" placeholder="Filter by package or maintainer…" autofocus>
   <select id="st"><option value="">All statuses</option>__OPTIONS__</select>
@@ -668,7 +678,8 @@ function render() {
     view = [...view].sort((a, b) =>
       sortDir * String(a[sortKey]).localeCompare(String(b[sortKey]), 'en', {numeric: num}));
   }
-  count.textContent = view.length + ' of ' + rows.length + ' source packages';
+  count.textContent = view.length.toLocaleString('en-US') + ' of ' +
+                      rows.length.toLocaleString('en-US') + ' source packages';
   tb.innerHTML = view.map(r =>
     `<tr><td class="status ${cls(r.status)}">${esc(r.status)}</td><td>${esc(r.name)}</td>` +
     `<td class="v" title="${esc(r.left)}">${esc(r.left) || '—'}</td>` +
@@ -687,10 +698,24 @@ render();
 """
 
 
-def emit_html(rows, left, right, counts, out) -> None:
+def _status_cls(status: str, left: "Distro", right: "Distro") -> str:
+    """CSS class for a status — mirrors cls() in the page's own script."""
+    if status.startswith("Only"):
+        return "s-OnlyL" if status == statuses(left, right)["only_left"] else "s-OnlyR"
+    return "s-" + status.split("-")[0]
+
+
+def emit_html(rows, left, right, counts, out, totals) -> None:
     title = f"{left.label} vs {right.label} — source package versions"
-    sub = "oss + non-oss · x86_64 + noarch · " + " · ".join(
-        f"{k}: {v}" for k, v in counts.items()
+    sub = (
+        f"<strong>{totals['total']:,} source packages</strong> · "
+        f"{html.escape(left.label)} {totals['left']:,} · "
+        f"{html.escape(right.label)} {totals['right']:,} · "
+        f"{totals['both']:,} in both · oss + non-oss · x86_64 + noarch"
+    )
+    breakdown = " · ".join(
+        f'<span class="{_status_cls(s, left, right)}">{html.escape(s)}</span> {v:,}'
+        for s, v in counts.items()
     )
     options = "".join(
         f'<option value="{html.escape(s)}">{html.escape(s)}</option>' for s in counts
@@ -717,7 +742,8 @@ def emit_html(rows, left, right, counts, out) -> None:
     page = HTML_TEMPLATE
     for needle, value in (
         ("__TITLE__", html.escape(title)),
-        ("__SUB__", html.escape(sub)),
+        ("__SUB__", sub),
+        ("__BREAKDOWN__", breakdown),
         ("__LEFT__", html.escape(left.label)),
         ("__RIGHT__", html.escape(right.label)),
         ("__PROJECT__", html.escape(PROJECT_URL)),
@@ -817,6 +843,15 @@ def main(argv=None) -> int:
     for r in rows:
         counts[r["status"]] += 1
 
+    # Totals are taken before --only/--grep/--maintainer narrow the view, so a
+    # filtered page still reports the size of the whole data set.
+    totals = {
+        "total": len(rows),
+        "left": sum(1 for r in rows if r["left_version"]),
+        "right": sum(1 for r in rows if r["right_version"]),
+        "both": sum(1 for r in rows if r["left_version"] and r["right_version"]),
+    }
+
     if args.only:
         wanted = [o.lower() for o in args.only]
         rows = [r for r in rows if any(w in r["status"].lower() for w in wanted)]
@@ -837,17 +872,18 @@ def main(argv=None) -> int:
         elif args.format == "csv":
             emit_csv(rows, left.label, right.label, out, args.maintainers)
         elif args.format == "json":
-            emit_json(rows, left, right, counts, out)
+            emit_json(rows, left, right, counts, out, totals)
         elif args.format == "html":
-            emit_html(rows, left, right, counts, out)
+            emit_html(rows, left, right, counts, out, totals)
     finally:
         if args.output:
             out.close()
 
     if not args.quiet:
-        total = sum(counts.values())
         print(
-            f"\n{total} source packages: "
+            f"\n{totals['total']} source packages "
+            f"({left.label} {totals['left']}, {right.label} {totals['right']}, "
+            f"{totals['both']} in both): "
             + ", ".join(f"{v} {k}" for k, v in counts.items()),
             file=sys.stderr,
         )

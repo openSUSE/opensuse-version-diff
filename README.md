@@ -106,8 +106,18 @@ or a stray `v` prefix compare that way under rpm rules.
 
 ## Current numbers (Tumbleweed vs Leap 16.1, oss + non-oss, x86_64 + noarch)
 
-17453 source packages: 5027 Older-in-Leap, 26 Newer-in-Leap, 5211 Same,
-6879 Only-in-TW, 310 Only-in-Leap.
+17453 source packages in total — 17143 in Tumbleweed, 10574 in Leap 16.1, of
+which 10264 exist in both:
+
+| Status | Count |
+| --- | --- |
+| Older-in-Leap | 5027 |
+| Newer-in-Leap | 26 |
+| Same | 5211 |
+| Only-in-TW | 6879 |
+| Only-in-Leap | 310 |
+
+The JSON export carries the same figures under `totals` and `summary`.
 
 ## Publishing to GitHub Pages
 
