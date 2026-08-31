@@ -299,13 +299,25 @@ def fetch(repo: Repo, quiet: bool = False, refresh: bool = False) -> str:
         what = "refreshing" if have_local else "fetching"
         print(f"{what} {repo.url} -> {gz}", file=sys.stderr)
     tmp = gz + ".part"
-    with urllib.request.urlopen(_request(repo.url)) as resp, open(tmp, "wb") as out:
-        shutil.copyfileobj(resp, out)
-        if remote is None:
-            remote = {
-                "last_modified": resp.headers.get("Last-Modified"),
-                "size": resp.headers.get("Content-Length"),
-            }
+    try:
+        with urllib.request.urlopen(_request(repo.url), timeout=300) as resp, \
+                open(tmp, "wb") as out:
+            shutil.copyfileobj(resp, out)
+            if remote is None:
+                remote = {
+                    "last_modified": resp.headers.get("Last-Modified"),
+                    "size": resp.headers.get("Content-Length"),
+                }
+    except (urllib.error.URLError, OSError) as err:
+        # A mirror hiccup must not fail a scheduled rebuild when we already
+        # have a usable copy; only a cold start has nothing to fall back on.
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        if not have_local:
+            raise
+        print(f"warning: cannot download {repo.url} ({err}), using local copy",
+              file=sys.stderr)
+        return _ungzip(repo, gz, quiet)
     os.replace(tmp, gz)
     with open(meta_path, "w", encoding="utf-8") as fh:
         json.dump(remote, fh)

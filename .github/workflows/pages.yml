@@ -42,13 +42,24 @@ jobs:
 
       # No python3-rpm on the runner, so osdiff falls back to its own
       # rpmvercmp; it is verified to agree with rpm's labelCompare.
-      - name: Generate the site
+      # Split per command so a failure names the step that broke.
+      - name: Build index.html (refreshes the indexes)
         run: |
           mkdir -p _site
           python3 osdiff.py --refresh --format html -o _site/index.html
-          python3 osdiff.py --format json -o _site/diff.json --quiet
-          python3 osdiff.py --format csv  -o _site/diff.csv --maintainers --quiet
+
+      - name: Build diff.json
+        run: python3 osdiff.py --format json -o _site/diff.json --quiet
+
+      - name: Build diff.csv
+        run: python3 osdiff.py --format csv -o _site/diff.csv --maintainers --quiet
+
+      - name: Compress and check the output
+        run: |
           gzip -9 -k _site/diff.json
+          # Fail loudly here rather than deploying a page without a table.
+          grep -q 'id="q"' _site/index.html
+          ls -la _site
 
       - uses: actions/upload-pages-artifact@v3
         with:
