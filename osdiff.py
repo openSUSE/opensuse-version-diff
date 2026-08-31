@@ -34,6 +34,7 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 # Only x86_64 and noarch are compared.  Tumbleweed's ARCHIVES index covers no
 # other arch, so pulling in Leap's aarch64/ppc64le/s390x packages would only
@@ -107,7 +108,8 @@ DISTROS = {
 
 # Sent on every HTTP request so download.opensuse.org admins can attribute the
 # traffic (and reach the project) if it ever becomes a nuisance.
-USER_AGENT = "osdiff/1.0 (+https://github.com/openSUSE/opensuse-version-diff)"
+PROJECT_URL = "https://github.com/openSUSE/opensuse-version-diff"
+USER_AGENT = f"osdiff/1.0 (+{PROJECT_URL})"
 
 # Maintainership comes from the PackageHub product repo.  Cloning it over git
 # avoids the bot check that guards the src.opensuse.org web interface.
@@ -548,8 +550,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   }
   body { background: var(--bg); color: var(--fg); margin: 0 auto; max-width: 1400px;
          padding: 2rem 1.5rem 4rem; font: 14px/1.5 system-ui, sans-serif; }
+  header { display: flex; align-items: baseline; justify-content: space-between;
+           gap: 1rem; flex-wrap: wrap; }
   h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
   p.sub { color: var(--muted); margin: 0 0 1.5rem; }
+  a { color: inherit; }
+  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: .85rem; }
+  footer ul { margin: .4rem 0 0; padding-left: 1.2rem; }
   .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; position: sticky;
          top: 0; background: var(--bg); padding: .75rem 0; border-bottom: 1px solid var(--line); }
   input, select { font: inherit; padding: .4rem .6rem; border: 1px solid var(--line);
@@ -573,7 +581,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>__TITLE__</h1>
+<header>
+  <h1>__TITLE__</h1>
+  <p><a href="__PROJECT__#readme">README</a> · <a href="__PROJECT__">source on GitHub</a></p>
+</header>
 <p class="sub">__SUB__</p>
 <div class="bar">
   <input id="q" type="search" placeholder="Filter by package or maintainer…" autofocus>
@@ -592,6 +603,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </tr></thead>
   <tbody id="tb"></tbody>
 </table>
+<footer>
+  <p>Generated __GENERATED__ by
+     <a href="__PROJECT__">osdiff</a>. Only the upstream version is compared, not
+     the rpm release. Maintainers are known for PackageHub packages only.</p>
+  <p>Data:</p>
+  <ul>__SOURCES__
+    <li>Downloads: <a href="diff.json">diff.json</a> ·
+        <a href="diff.json.gz">diff.json.gz</a> · <a href="diff.csv">diff.csv</a></li>
+  </ul>
+</footer>
 <script>
 const DATA = __DATA__;
 const tb = document.getElementById('tb'), q = document.getElementById('q'),
@@ -647,12 +668,24 @@ def emit_html(rows, left, right, counts, out) -> None:
         }
         for r in rows
     ]
+    sources = "".join(
+        f'\n    <li>{html.escape(d.label)} {html.escape(r.name)}: '
+        f'<a href="{html.escape(r.url)}">{html.escape(r.url)}</a></li>'
+        for d in (left, right)
+        for r in d.repos
+    ) + (
+        f'\n    <li>Maintainers: <a href="{html.escape(MAINTAINERS_REPO)}">'
+        f"{html.escape(MAINTAINERS_REPO)}</a> ({html.escape(MAINTAINERS_BRANCH)})</li>"
+    )
     page = HTML_TEMPLATE
     for needle, value in (
         ("__TITLE__", html.escape(title)),
         ("__SUB__", html.escape(sub)),
         ("__LEFT__", html.escape(left.label)),
         ("__RIGHT__", html.escape(right.label)),
+        ("__PROJECT__", html.escape(PROJECT_URL)),
+        ("__GENERATED__", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        ("__SOURCES__", sources),
         ("__OPTIONS__", options),
         ("__DATA__", json.dumps(slim).replace("</", "<\\/").replace("&", "\\u0026").replace("<", "\\u003c")),
     ):
