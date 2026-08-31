@@ -1,0 +1,53 @@
+name: Build and publish the version diff
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Tumbleweed moves daily; rebuild every morning (UTC).
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; let a running one finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No python3-rpm on the runner, so osdiff falls back to its own
+      # rpmvercmp; it is verified to agree with rpm's labelCompare.
+      - name: Generate the site
+        run: |
+          mkdir -p _site
+          python3 osdiff.py --format html -o _site/index.html
+          python3 osdiff.py --format json -o _site/diff.json --quiet
+          python3 osdiff.py --format csv  -o _site/diff.csv --maintainers --quiet
+          gzip -9 -k _site/diff.json
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

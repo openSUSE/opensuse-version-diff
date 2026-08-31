@@ -1,0 +1,17 @@
+# Downloaded repository indexes (several GB uncompressed) and their archives
+ARCHIVES_*
+*.gz
+*.part
+
+# Local clone of the PackageHub maintainership data
+.packagehub/
+_maintainership.json
+
+# Generated output
+diff.html
+diff.json
+_site/
+
+# Python
+__pycache__/
+*.pyc
