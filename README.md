@@ -33,6 +33,12 @@ decompressed), the maintainership data via a shallow sparse `git clone` — git
 avoids the bot check that guards the src.opensuse.org web interface. Everything
 is reused on later runs, so re-runs take about two seconds.
 
+Local copies are never re-downloaded unless you ask for it. `--refresh` issues
+one HEAD request per repository and only pulls a file whose `Last-Modified` or
+size actually changed, which keeps a scheduled rebuild at zero mirror traffic on
+the days nothing moved. Requests carry a `User-Agent` naming this project so
+download.opensuse.org admins can attribute (and complain about) the traffic.
+
 non-oss contributes 31 source packages (`discord`, `opera`, `steam`, `unrar`,
 `wine-mono`, …); the JSON export records per package which repository each side
 came from, in `left_repos` / `right_repos`.
@@ -75,6 +81,7 @@ or a stray `v` prefix compare that way under rpm rules.
 --maintainer NAME       only packages maintained by NAME
 --no-maintainers        skip loading maintainer data entirely
 --with-release          compare the rpm release too
+--refresh               re-check upstream for newer ARCHIVES indexes
 -o FILE                 write output to FILE
 -q                      no progress/summary on stderr
 ```
@@ -82,8 +89,11 @@ or a stray `v` prefix compare that way under rpm rules.
 ## Examples
 
 ```sh
-# Everything a given maintainer has fallen behind on
-./osdiff.py --maintainer mnhauke --only older
+# Everything you maintain, with the maintainer column shown
+./osdiff.py --maintainer lkocman --maintainers
+
+# ... or only the packages a maintainer has fallen behind on
+./osdiff.py --maintainer lkocman --only older
 
 # Python stack, as markdown for a report
 ./osdiff.py --only older --grep '^python-' --format md -o python.md
@@ -115,5 +125,7 @@ The deployed site contains:
 | `diff.json` / `diff.json.gz` | full data set including per-package repos and arches |
 | `diff.csv` | flat table with maintainers |
 
-The ARCHIVES indexes are never committed — `.gitignore` keeps them out, and CI
-re-downloads them (~230 MB) on each run.
+The ARCHIVES indexes are never committed — `.gitignore` keeps them out. CI
+caches the compressed ones between runs and passes `--refresh`, so a scheduled
+rebuild normally costs four HEAD requests and downloads only what changed
+upstream. A cold cache pulls ~230 MB.

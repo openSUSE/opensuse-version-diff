@@ -31,6 +31,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -103,6 +104,10 @@ DISTROS = {
     ),
 }
 
+
+# Sent on every HTTP request so download.opensuse.org admins can attribute the
+# traffic (and reach the project) if it ever becomes a nuisance.
+USER_AGENT = "osdiff/1.0 (+https://github.com/openSUSE/opensuse-version-diff)"
 
 # Maintainership comes from the PackageHub product repo.  Cloning it over git
 # avoids the bot check that guards the src.opensuse.org web interface.
@@ -239,18 +244,77 @@ class Package:
 SRCRPM_RE = re.compile(rb":    Source RPM  : ([^\n]+)\.src\.rpm\n")
 
 
-def fetch(repo: Repo, quiet: bool = False) -> str:
-    """Return a local, uncompressed copy of one repository's ARCHIVES file."""
+def _request(url: str, method: str = "GET") -> urllib.request.Request:
+    """Identify ourselves, so mirror admins can tell what this traffic is."""
+    return urllib.request.Request(url, method=method, headers={"User-Agent": USER_AGENT})
+
+
+def _remote_meta(url: str) -> dict:
+    """Last-Modified/size of the remote file, via a HEAD request."""
+    with urllib.request.urlopen(_request(url, "HEAD"), timeout=60) as resp:
+        return {
+            "last_modified": resp.headers.get("Last-Modified"),
+            "size": resp.headers.get("Content-Length"),
+        }
+
+
+def fetch(repo: Repo, quiet: bool = False, refresh: bool = False) -> str:
+    """Return a local, uncompressed copy of one repository's ARCHIVES file.
+
+    Existing files are reused as-is.  With `refresh`, a HEAD request decides
+    whether anything actually changed upstream — these indexes are 100+ MB and
+    Leap's barely moves, so re-downloading them on a schedule would just burn
+    somebody else's mirror bandwidth.
+    """
+    gz = repo.path + ".gz"
+    meta_path = repo.path + ".meta.json"
+    have_local = os.path.exists(repo.path) or os.path.exists(gz)
+
+    if have_local and not refresh:
+        return _ungzip(repo, gz, quiet)
+
+    remote = None
+    if have_local and refresh:
+        try:
+            remote = _remote_meta(repo.url)
+        except (urllib.error.URLError, OSError) as err:
+            print(f"warning: cannot check {repo.url} ({err}), using local copy",
+                  file=sys.stderr)
+            return _ungzip(repo, gz, quiet)
+        local = {}
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, encoding="utf-8") as fh:
+                    local = json.load(fh)
+            except (OSError, ValueError):
+                local = {}
+        if local and local == remote:
+            if not quiet:
+                print(f"unchanged upstream: {repo.path}", file=sys.stderr)
+            return _ungzip(repo, gz, quiet)
+
+    if not quiet:
+        what = "refreshing" if have_local else "fetching"
+        print(f"{what} {repo.url} -> {gz}", file=sys.stderr)
+    tmp = gz + ".part"
+    with urllib.request.urlopen(_request(repo.url)) as resp, open(tmp, "wb") as out:
+        shutil.copyfileobj(resp, out)
+        if remote is None:
+            remote = {
+                "last_modified": resp.headers.get("Last-Modified"),
+                "size": resp.headers.get("Content-Length"),
+            }
+    os.replace(tmp, gz)
+    with open(meta_path, "w", encoding="utf-8") as fh:
+        json.dump(remote, fh)
+    if os.path.exists(repo.path):
+        os.unlink(repo.path)  # force the stale plain copy to be rebuilt
+    return _ungzip(repo, gz, quiet)
+
+
+def _ungzip(repo: Repo, gz: str, quiet: bool) -> str:
     if os.path.exists(repo.path):
         return repo.path
-    gz = repo.path + ".gz"
-    if not os.path.exists(gz):
-        if not quiet:
-            print(f"fetching {repo.url} -> {gz}", file=sys.stderr)
-        tmp = gz + ".part"
-        with urllib.request.urlopen(repo.url) as resp, open(tmp, "wb") as out:
-            shutil.copyfileobj(resp, out)
-        os.replace(tmp, gz)
     if not quiet:
         print(f"decompressing {gz} -> {repo.path}", file=sys.stderr)
     tmp = repo.path + ".part"
@@ -642,6 +706,12 @@ def main(argv=None) -> int:
         "since Leap and Tumbleweed use unrelated release schemes)",
     )
     p.add_argument("-o", "--output", metavar="FILE", help="write to FILE instead of stdout")
+    p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="check upstream for newer ARCHIVES indexes (HEAD request first, "
+        "so unchanged files are not re-downloaded)",
+    )
     p.add_argument("-q", "--quiet", action="store_true", help="no summary on stderr")
     args = p.parse_args(argv)
 
@@ -664,7 +734,7 @@ def main(argv=None) -> int:
     for distro in (left, right):
         pkgs: dict = {}
         for repo in distro.repos:
-            path = fetch(repo, args.quiet)
+            path = fetch(repo, args.quiet, args.refresh)
             if not args.quiet:
                 print(f"parsing {path} ({distro.label} {repo.name})…", file=sys.stderr)
             parse_archives(path, repo.name, pkgs)
