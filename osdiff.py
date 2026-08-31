@@ -540,34 +540,53 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>__TITLE__</title>
 <style>
+  /* openSUSE brand palette.  The bright brand hues are legible on the dark
+     maple-maroon surface but none of them reaches 4.5:1 on bagel-beige, so
+     light mode uses same-hue steps darkened in OKLab until they pass. */
   :root {
-    --bg: #ffffff; --fg: #1c1c1c; --muted: #6b6b6b; --line: #e2e2e2;
-    --older: #b3261e; --newer: #1f6f43; --same: #6b6b6b; --only: #7a4b00;
+    --geeko-green: #42cd42; --plum-purple: #a498ff; --radish-red: #ff5b45;
+    --bagel-beige: #fff8ee; --gabbro-gray: #b8aeab; --maple-maroon: #301a14;
+
+    --bg: #fff8ee; --surface: #f4ece3; --fg: #301a14;
+    --muted: #6d5d58; --line: #d8cfc9; --accent: #00631f; --ring: #42cd42;
+    --older: #e04a1e; --newer: #00631f; --same: #6d5d58;
+    --only-l: #7465c7; --only-r: #00668c;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #17181a; --fg: #e8e8e8; --muted: #9a9a9a; --line: #303235;
-            --older: #ff8a80; --newer: #7ddba3; --same: #9a9a9a; --only: #f0b866; }
+    :root {
+      --bg: #301a14; --surface: #3c2722; --fg: #fff8ee;
+      --muted: #b8aeab; --line: #56433e; --accent: #42cd42; --ring: #42cd42;
+      --older: #ff5b45; --newer: #42cd42; --same: #b8aeab;
+      --only-l: #a498ff; --only-r: #00c8ff;
+    }
   }
+  html { border-top: 4px solid var(--geeko-green); }
   body { background: var(--bg); color: var(--fg); margin: 0 auto; max-width: 1400px;
          padding: 2rem 1.5rem 4rem; font: 14px/1.5 system-ui, sans-serif; }
   header { display: flex; align-items: baseline; justify-content: space-between;
            gap: 1rem; flex-wrap: wrap; }
   h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
   p.sub { color: var(--muted); margin: 0 0 1.5rem; }
-  a { color: inherit; }
-  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line);
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:hover { color: var(--plum-purple); }
+  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 2px solid var(--geeko-green);
            color: var(--muted); font-size: .85rem; }
   footer ul { margin: .4rem 0 0; padding-left: 1.2rem; }
   .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; position: sticky;
          top: 0; background: var(--bg); padding: .75rem 0; border-bottom: 1px solid var(--line); }
   input, select { font: inherit; padding: .4rem .6rem; border: 1px solid var(--line);
-                  border-radius: 6px; background: var(--bg); color: var(--fg); }
+                  border-radius: 6px; background: var(--surface); color: var(--fg); }
+  input:focus-visible, select:focus-visible { outline: 2px solid var(--ring);
+                  outline-offset: 1px; border-color: var(--ring); }
   input { flex: 1 1 16rem; }
   table { border-collapse: collapse; width: 100%; table-layout: fixed; }
   th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid var(--line);
            vertical-align: top; }
   th { cursor: pointer; user-select: none; white-space: nowrap; font-size: .8rem;
-       letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+       letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+       background: var(--surface); border-bottom: 2px solid var(--gabbro-gray); }
+  th:hover { color: var(--plum-purple); }
+  tbody tr:hover { background: var(--surface); }
   td.v { font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden;
          text-overflow: ellipsis; }
   td.m { color: var(--muted); font-size: .85em; max-width: 18rem; overflow: hidden;
@@ -575,8 +594,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .status { font-weight: 600; white-space: nowrap; }
   .s-Older { color: var(--older); }
   .s-Newer { color: var(--newer); }
-  .s-Same { color: var(--same); }
-  .s-Only { color: var(--only); }
+  .s-Same  { color: var(--same); font-weight: 400; }
+  .s-OnlyL { color: var(--only-l); }
+  .s-OnlyR { color: var(--only-r); }
   #count { color: var(--muted); margin: .75rem 0; }
 </style>
 </head>
@@ -618,7 +638,12 @@ const DATA = __DATA__;
 const tb = document.getElementById('tb'), q = document.getElementById('q'),
       st = document.getElementById('st'), count = document.getElementById('count');
 let rows = DATA, sortKey = null, sortDir = 1;
-function cls(s) { return 's-' + s.split('-')[0]; }
+const ONLY_LEFT = "__ONLY_LEFT__";
+// Both "only" statuses start with the same word, so they need telling apart.
+function cls(s) {
+  if (s.startsWith('Only')) return s === ONLY_LEFT ? 's-OnlyL' : 's-OnlyR';
+  return 's-' + s.split('-')[0];
+}
 function esc(s) { return String(s).replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function render() {
@@ -687,6 +712,7 @@ def emit_html(rows, left, right, counts, out) -> None:
         ("__GENERATED__", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
         ("__SOURCES__", sources),
         ("__OPTIONS__", options),
+        ("__ONLY_LEFT__", html.escape(statuses(left, right)["only_left"])),
         ("__DATA__", json.dumps(slim).replace("</", "<\\/").replace("&", "\\u0026").replace("<", "\\u003c")),
     ):
         page = page.replace(needle, value)

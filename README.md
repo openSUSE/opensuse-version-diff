@@ -1,5 +1,7 @@
 # osdiff — openSUSE source package version diff
 
+### ➜ **[View the live version diff](https://opensuse.github.io/opensuse-version-diff/)**
+
 Compares source package versions between openSUSE distributions (by default
 Tumbleweed vs Leap 16.1) using the `ARCHIVES.gz` indexes published in every
 repository, and adds maintainer information from PackageHub.
