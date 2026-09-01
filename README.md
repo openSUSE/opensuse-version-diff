@@ -85,9 +85,38 @@ them would mark everything as different. Use `--with-release` to include it.
 Comparison itself goes through rpm's own `labelCompare` when `python3-rpm` is
 installed, with a built-in `rpmvercmp` as fallback.
 
-A handful of `Newer-in-Leap` hits are version-scheme artifacts rather than real
-regressions — Tumbleweed's normalized perl versions (`1.291.100` vs `1.2911`)
-or a stray `v` prefix compare that way under rpm rules.
+## Version schemes rpm gets wrong
+
+`rpmvercmp` is a string algorithm — it has no idea what a version *means*, and
+three scheme mismatches make it answer confidently and wrongly. All three are
+rewritten **before comparing only**; the table always prints the version as
+packaged, because a mis-versioned package is a bug worth seeing, not one to
+paper over. Affected cells are <ins>underlined</ins> on the page and say what
+they were compared as on hover; the JSON export carries a `normalized` object
+per row, and the run prints a per-rule tally on stderr.
+
+| Rule | Problem | Example |
+| --- | --- | --- |
+| `cpan-decimal` | CPAN's two notations for one release. perl reads the fraction in groups of three, so `1.111017` *is* `1.111.17`, and the two sort differently under rpm rules | `perl-CPAN-Mini` 1.111017 vs 1.111.17 → same |
+| `pre-release` | a pre-release marker glued on without the `~` that tells rpm it sorts *below* the release | `resource-agents` 4.18.0rc1 read as newer than 4.18.0 |
+| `v-prefix` | a stray `v`, which rpm reads as an alpha segment — and alpha always loses to numeric | `dysk` v3.6.1 read as older than 2.9.1 |
+
+That is 1011 of 17.5k rows, and it moves 128 verdicts: 121 `Older-in-Leap` and
+7 `Newer-in-Leap` rows were neither.
+
+Each rule is deliberately narrow, since one that fires where it should not
+invents a difference nobody can explain. `pre-release` only matches between a
+digit and a boundary, so it cannot hit a git hash or a longer word;
+`cpan-decimal` is scoped to `perl-*`, because two-component versions are
+ordinary elsewhere — `lua53-cliargs` 3.02 is 3.02, not perl's 3.20.0.
+`test_osdiff.py` pins all of this down both ways:
+
+```sh
+python3 -m unittest -v test_osdiff
+```
+
+The 13 remaining `Newer-in-Leap` rows are genuine: Leap really does ship a
+newer knot, yast2-bootloader, xdg-utils and so on, mostly from SLES.
 
 ## Extra columns
 
@@ -202,9 +231,9 @@ in both compared distros, and 3610 are behind upstream in Tumbleweed:
 
 | Status | Count |
 | --- | --- |
-| Older-in-Leap | 5027 |
-| Newer-in-Leap | 26 |
-| Same | 5211 |
+| Older-in-Leap | 4919 |
+| Newer-in-Leap | 13 |
+| Same | 5332 |
 | Only-in-TW | 6879 |
 | Only-in-Leap | 389 |
 

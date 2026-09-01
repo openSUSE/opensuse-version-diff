@@ -21,6 +21,7 @@ local repology-ish index later on.
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import gzip
 import html
@@ -239,11 +240,82 @@ except ImportError:  # pragma: no cover - fallback for hosts without python3-rpm
         return 0
 
 
+# --------------------------------------------------------------------------
+# version normalization
+# --------------------------------------------------------------------------
+#
+# rpmvercmp is a string algorithm: it has no idea what a version *means*.  Three
+# scheme mismatches make it answer confidently and wrongly, and all three show
+# up between Tumbleweed and Leap.  They are normalized for comparison only —
+# what the table prints stays the NVR as packaged, because a mis-versioned
+# package is a packaging bug worth seeing, not one to paper over.
+#
+# Each rule is deliberately narrow.  A rule that fires where it should not is
+# worse than one that misses: it invents a difference nobody can explain.
+
+# A stray `v` in front of the number, e.g. dysk's `v3.6.1`.  rpm reads that as
+# an alpha segment, and alpha always loses to numeric — so `v3.6.1` < `2.9.1`.
+_V_PREFIX_RE = re.compile(r"^[vV](?=\d)")
+
+# A pre-release marker glued to the version without the `~` that tells rpm it
+# sorts *before* the release: `4.18.0rc1` should be below `4.18.0`, but rpm puts
+# it above.  Anchored between a digit and a boundary so it cannot hit a git
+# hash (hex has no `r`/`v`/`t`/`l`/`p`) or the middle of a longer word.
+_PRERELEASE_RE = re.compile(
+    r"(?<=\d)(rc|alpha|beta|pre|dev)(?=\d|$|[.+~_^-])", re.IGNORECASE
+)
+
+# CPAN ships one version in two notations, and openSUSE's perl packages use
+# both: the decimal `1.111017` and the v-string `1.111.17` are the same
+# release.  perl reads the fraction in groups of three, so the conversion is
+# exact — and it is not order-preserving under rpm rules, which is the whole
+# problem (`3.24` is perl's 3.240.0, i.e. *newer* than `3.9`'s 3.900.0 is not:
+# 3.9 wins, though rpm says 24 > 9).
+_PERL_DECIMAL_RE = re.compile(r"^(\d+)\.(\d+)$")
+
+
+def _perl_decimal(version: str) -> str:
+    """`1.111017` -> `1.111.17`, perl's own `version->parse(x)->normal`."""
+    m = _PERL_DECIMAL_RE.match(version)
+    if not m:
+        return version  # already dotted, or not a bare decimal
+    whole, frac = m.groups()
+    frac = frac.ljust(-(-len(frac) // 3) * 3, "0")  # pad to a multiple of three
+    groups = [str(int(frac[i:i + 3])) for i in range(0, len(frac), 3)]
+    while len(groups) < 2:  # perl normalizes to three components: 0.69 -> 0.690.0
+        groups.append("0")
+    return ".".join([whole, *groups])
+
+
+def normalize_version(name: str, version: str) -> tuple:
+    """Return the version to *compare* with, plus the rules that changed it.
+
+    Never used for display.  Scoping matters: the CPAN rule is restricted to
+    `perl-*` because two-component versions are ordinary elsewhere — lua's
+    `lua53-cliargs` 3.02 is 3.02, not perl's 3.20.0.
+    """
+    rules = []
+    v = version
+    if _V_PREFIX_RE.match(v):
+        v = v[1:]
+        rules.append("v-prefix")
+    if name.startswith("perl-"):
+        pv = _perl_decimal(v)
+        if pv != v:
+            v = pv
+            rules.append("cpan-decimal")
+    pv = _PRERELEASE_RE.sub(lambda m: "~" + m.group(0), v)
+    if pv != v:
+        v = pv
+        rules.append("pre-release")
+    return v, tuple(rules)
+
+
 def evr_cmp(a: "Package", b: "Package", with_release: bool) -> int:
     """Compare two packages, optionally including the release."""
     ra = a.release if with_release else ""
     rb = b.release if with_release else ""
-    return _label_compare((None, a.version, ra), (None, b.version, rb))
+    return _label_compare((None, a.cmp_version, ra), (None, b.cmp_version, rb))
 
 
 # --------------------------------------------------------------------------
@@ -258,6 +330,10 @@ class Package:
     release: str
     arches: set = field(default_factory=set)
     repos: set = field(default_factory=set)
+
+    def __post_init__(self):
+        # What comparison uses; `version`/`vr` stay as packaged, for display.
+        self.cmp_version, self.cmp_rules = normalize_version(self.name, self.version)
 
     @property
     def vr(self) -> str:
@@ -615,10 +691,12 @@ def compare(left: dict, right: dict, extras: list, with_release: bool,
         # x0, x1, … are the flat columns the text formats and the page print;
         # `extras` keeps the same detail the left/right side gets, for json.
         row["extras"] = []
+        column = {"left": lp, "right": rp}
         for i, (distro, pkgs) in enumerate(extras):
             ev = pkgs.get(name)
             ep = newest(ev, with_release) if ev else None
             row[f"x{i}"] = ep.vr if ep else ""
+            column[f"x{i}"] = ep
             row["extras"].append(
                 {
                     "key": distro.key,
@@ -629,6 +707,18 @@ def compare(left: dict, right: dict, extras: list, with_release: bool,
                     "repos": sorted(ep.repos) if ep else [],
                 }
             )
+
+        # Say so wherever a column was not read at face value.  Only left and
+        # right feed the verdict, but marking the extras too keeps the row
+        # honest: the same string must not be flagged in one column and shown
+        # plain in the next.
+        norm = {k: p.cmp_version for k, p in column.items() if p and p.cmp_rules}
+        if norm:
+            rules = []
+            for pkg in column.values():
+                if pkg:
+                    rules += [r for r in pkg.cmp_rules if r not in rules]
+            row["normalized"] = {**norm, "rules": rules}
         rows.append(row)
     return rows
 
@@ -795,6 +885,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   tbody tr:hover { background: var(--surface); }
   td.v { font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden;
          text-overflow: ellipsis; }
+  td.v.norm, .norm-eg { text-decoration: underline dotted var(--muted);
+                        text-underline-offset: .25em; }
   td.m { color: var(--muted); font-size: .85em; max-width: 18rem; overflow: hidden;
          text-overflow: ellipsis; white-space: nowrap; }
   .status { font-weight: 600; white-space: nowrap; }
@@ -826,7 +918,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <footer>
   <p>Generated __GENERATED__ by
      <a href="__PROJECT__">osdiff</a>. Only the upstream version is compared, not
-     the rpm release. Maintainers are known for PackageHub packages only.</p>
+     the rpm release. Maintainers are known for PackageHub packages only.
+     A <span class="norm-eg">dotted version</span> was rewritten before
+     comparing — a CPAN decimal, a missing <code>~</code> before a pre-release
+     or a stray <code>v</code>; hover it to see what it was compared as.</p>
   <p>Data:</p>
   <ul>__SOURCES__
     <li>Downloads: <a href="diff.json">diff.json</a> ·
@@ -862,7 +957,13 @@ function render() {
                       rows.length.toLocaleString('en-US') + ' source packages';
   tb.innerHTML = view.map(r =>
     `<tr><td class="status ${cls(r.status)}">${esc(r.status)}</td><td>${esc(r.name)}</td>` +
-    VCOLS.map(k => `<td class="v" title="${esc(r[k])}">${esc(r[k]) || '—'}</td>`).join('') +
+    VCOLS.map(k => {
+      // r.n[k] is what this cell was actually compared as; say so rather than
+      // quietly showing one version and comparing another.
+      const n = r.n && r.n[k];
+      const t = n ? `${r[k]} — compared as ${n}` : r[k];
+      return `<td class="v${n ? ' norm' : ''}" title="${esc(t)}">${esc(r[k]) || '—'}</td>`;
+    }).join('') +
     `<td class="m" title="${esc(r.maint)}">${esc(r.maint) || '—'}</td></tr>`).join('');
 }
 q.oninput = st.onchange = render;
@@ -929,6 +1030,9 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
             "status": r["status"],
             "maint": ", ".join(r["maintainers"]),
             **{key: r[key] for key, _label in vcols},
+            # `n` only rides along where it exists — 1k of 17.5k rows.
+            **({"n": {k: v for k, v in r["normalized"].items() if k != "rules"}}
+               if r.get("normalized") else {}),
         }
         for r in rows
     ]
@@ -1199,6 +1303,16 @@ def main(argv=None) -> int:
             + ", ".join(f"{v} {k}" for k, v in counts.items()),
             file=sys.stderr,
         )
+        norm = collections.Counter(
+            rule for r in rows for rule in r.get("normalized", {}).get("rules", ())
+        )
+        if norm:
+            print(
+                f"{sum(1 for r in rows if r.get('normalized'))} rows carry a version "
+                "rewritten for comparison: "
+                + ", ".join(f"{v} {k}" for k, v in norm.most_common()),
+                file=sys.stderr,
+            )
     return 0
 
 

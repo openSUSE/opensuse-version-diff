@@ -30,6 +30,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The version-scheme rules decide whether a package reads as behind or
+      # level, so they gate the build rather than the data being rebuilt on top
+      # of a broken one.  Cheap: no network, no indexes needed.
+      - name: Test the version normalization
+        run: python3 -m unittest -v test_osdiff
+
       # Keep the compressed indexes between runs so --refresh only has to issue
       # a HEAD request per repository.  Unchanged files cost no mirror traffic;
       # the uncompressed copies (several GB) are rebuilt locally instead.
@@ -73,6 +79,7 @@ jobs:
           grep -q 'id="q"' _site/index.html
           grep -q 'data-k="x0"' _site/index.html
           grep -q 'data-k="up"' _site/index.html
+          grep -q '"n": {' _site/index.html  # normalized versions still marked
           ls -la _site
 
       - uses: actions/upload-pages-artifact@v3
