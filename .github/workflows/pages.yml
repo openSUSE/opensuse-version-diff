@@ -22,7 +22,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      OSDIFF_COLUMNS: --extra leap160 --discover
+      OSDIFF_COLUMNS: --extra leap160 --discover --repology
     steps:
       - uses: actions/checkout@v4
 
@@ -33,12 +33,15 @@ jobs:
       # Keep the compressed indexes between runs so --refresh only has to issue
       # a HEAD request per repository.  Unchanged files cost no mirror traffic;
       # the uncompressed copies (several GB) are rebuilt locally instead.
+      # The repology cache rides along: it is tiny, and keeping it is what
+      # holds that fetch to once a week instead of every morning.
       - name: Restore cached ARCHIVES indexes
         uses: actions/cache@v4
         with:
           path: |
             ARCHIVES_*.gz
             ARCHIVES_*.meta.json
+            repology_newest.json
           key: archives-${{ github.run_id }}
           restore-keys: archives-
 
@@ -48,8 +51,9 @@ jobs:
       #
       # --extra leap160 adds the previous Leap as a column; --discover picks up
       # a 16.2 (…16.9) on the day its repository appears, so the published
-      # table gains the next Leap without a commit here.  Every output must be
-      # built with the same columns, hence the shared OSDIFF_COLUMNS.
+      # table gains the next Leap without a commit here; --repology adds the
+      # upstream column, refetched weekly off the cache above.  Every output
+      # must be built with the same columns, hence the shared OSDIFF_COLUMNS.
       - name: Build index.html (refreshes the indexes)
         run: |
           mkdir -p _site
@@ -68,6 +72,7 @@ jobs:
           # or one that quietly lost the extra distro columns.
           grep -q 'id="q"' _site/index.html
           grep -q 'data-k="x0"' _site/index.html
+          grep -q 'data-k="up"' _site/index.html
           ls -la _site
 
       - uses: actions/upload-pages-artifact@v3

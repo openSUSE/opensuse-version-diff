@@ -31,7 +31,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -124,6 +126,19 @@ MAINTAINERS_REPO = "https://src.opensuse.org/products/PackageHub.git"
 MAINTAINERS_BRANCH = "leap-16.1"
 MAINTAINERS_FILE = "_maintainership.json"
 MAINTAINERS_CLONE = ".packagehub"
+
+# Repology supplies the "newest version anyone ships" column.  Only the
+# projects where Tumbleweed is *outdated* are downloaded: for the rest Repology
+# by definition has nothing newer than Tumbleweed, so its own version is the
+# answer.  That is ~17 pages instead of ~86, and the pages are the expensive
+# part — each one carries every repository's take on 200 projects.
+REPOLOGY_URL = "https://repology.org"
+REPOLOGY_API = f"{REPOLOGY_URL}/api/v1/projects/"
+REPOLOGY_REPO = "opensuse_tumbleweed"  # the only openSUSE repo Repology tracks
+REPOLOGY_CACHE = "repology_newest.json"
+REPOLOGY_PAGE = 200  # projects per response, fixed by the API
+REPOLOGY_DELAY = 1.0  # seconds between requests, as their docs ask
+REPOLOGY_MAX_PAGES = 200  # stop runaway pagination rather than trust the feed
 
 
 # --------------------------------------------------------------------------
@@ -474,13 +489,84 @@ def fetch_maintainers(quiet: bool = False) -> dict:
     return out
 
 
+def _repology_page(name: str) -> list:
+    """One page of outdated projects, starting after `name`."""
+    url = f"{REPOLOGY_API}{urllib.parse.quote(name)}/" if name else REPOLOGY_API
+    url += f"?inrepo={REPOLOGY_REPO}&outdated=1"
+    with urllib.request.urlopen(_request(url), timeout=120) as resp:
+        return sorted(json.load(resp).items())
+
+
+def fetch_repology(quiet: bool = False, max_age_days: float = 7.0) -> dict:
+    """Map source package name -> newest version Repology knows of.
+
+    Cached in `repology_newest.json` and only refetched once the cache is older
+    than `max_age_days`, so a nightly rebuild does not pull ~120 MB off
+    repology.org every morning for a table that moves by a few packages a day.
+    Pass 0 to force a refetch.  Failures degrade to the cache, then to nothing.
+    """
+    cached = None
+    if os.path.exists(REPOLOGY_CACHE):
+        try:
+            with open(REPOLOGY_CACHE, encoding="utf-8") as fh:
+                cached = json.load(fh)
+        except (OSError, ValueError):
+            cached = None
+    if cached:
+        age = (datetime.now(timezone.utc)
+               - datetime.fromisoformat(cached["fetched"])).total_seconds()
+        if age < max_age_days * 86400:
+            if not quiet:
+                print(f"{len(cached['versions'])} newest versions from "
+                      f"{REPOLOGY_CACHE} ({age / 3600:.0f}h old)", file=sys.stderr)
+            return cached["versions"]
+
+    versions: dict = {}
+    name = ""
+    try:
+        for page in range(REPOLOGY_MAX_PAGES):
+            if page:
+                time.sleep(REPOLOGY_DELAY)
+            if not quiet:
+                print(f"repology page {page + 1} (after {name or 'start'})…",
+                      file=sys.stderr)
+            projects = _repology_page(name)
+            for _project, entries in projects:
+                # The newest version is whatever Repology flagged as such; the
+                # names to hang it on are Tumbleweed's own srcnames, so no
+                # project-name mapping of our own is needed.
+                newest_v = [e["version"] for e in entries if e.get("status") == "newest"]
+                if not newest_v:
+                    continue
+                for e in entries:
+                    if e.get("repo") == REPOLOGY_REPO and e.get("srcname"):
+                        versions[e["srcname"]] = newest_v[0]
+            if len(projects) < REPOLOGY_PAGE:
+                break
+            name = projects[-1][0]
+    except (urllib.error.URLError, OSError, ValueError, KeyError) as err:
+        if cached:
+            print(f"warning: repology fetch failed ({err}), using stale cache",
+                  file=sys.stderr)
+            return cached["versions"]
+        print(f"warning: no repology data ({err})", file=sys.stderr)
+        return {}
+
+    with open(REPOLOGY_CACHE, "w", encoding="utf-8") as fh:
+        json.dump({"fetched": datetime.now(timezone.utc).isoformat(),
+                   "repo": REPOLOGY_REPO, "versions": versions}, fh)
+    if not quiet:
+        print(f"{len(versions)} packages outdated against repology", file=sys.stderr)
+    return versions
+
+
 # --------------------------------------------------------------------------
 # comparison
 # --------------------------------------------------------------------------
 
 
 def compare(left: dict, right: dict, extras: list, with_release: bool,
-            st: dict, maint: dict) -> list:
+            st: dict, maint: dict, upstream: dict = None) -> list:
     """Diff left against right, annotated with the versions of `extras`.
 
     `extras` is a list of (Distro, packages) pairs.  Their versions are shown
@@ -488,6 +574,10 @@ def compare(left: dict, right: dict, extras: list, with_release: bool,
     Leap still ships is not lost.  Such a row is `Only-in-<right>` like any
     other package Tumbleweed does not have — which Leap it survived in is what
     the version columns are for, and one status per side beats one per release.
+
+    `upstream` maps a package to the newest version Repology knows of.  Where
+    it says nothing but `left` has the package, `left`'s own version is that
+    newest one — only the projects `left` is outdated on are fetched.
     """
     rows = []
     names = set(left) | set(right)
@@ -520,6 +610,8 @@ def compare(left: dict, right: dict, extras: list, with_release: bool,
             "right_repos": sorted(rp.repos) if rp else [],
             "maintainers": maint.get(name, []),
         }
+        if upstream is not None:
+            row["up"] = upstream.get(name) or (lp.version if lp else "")
         # x0, x1, … are the flat columns the text formats and the page print;
         # `extras` keeps the same detail the left/right side gets, for json.
         row["extras"] = []
@@ -613,7 +705,25 @@ def emit_json(rows, left, right, extras, counts, out, totals) -> None:
                 right.key: totals["right"],
                 "in_both": totals["both"],
                 **{d.key: n for d, n in zip(extras, totals["extras"])},
+                **(
+                    {"upstream_outdated": totals["upstream_outdated"]}
+                    if "upstream_outdated" in totals
+                    else {}
+                ),
             },
+            **(
+                {
+                    "upstream": {
+                        "source": "repology",
+                        "repo": REPOLOGY_REPO,
+                        "url": f"{REPOLOGY_URL}/repository/{REPOLOGY_REPO}",
+                        "note": "newest version Repology sees in any distribution, "
+                                "not a release feed of the project itself",
+                    }
+                }
+                if "upstream_outdated" in totals
+                else {}
+            ),
             "summary": counts,
             "packages": rows,
         },
@@ -801,6 +911,11 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
         + f" · {totals['both']:,} in both {html.escape(left.label)} and "
         f"{html.escape(right.label)} · oss + non-oss · x86_64 + noarch"
     )
+    if "upstream_outdated" in totals:
+        sub += (
+            f" · {totals['upstream_outdated']:,} behind upstream in "
+            f"{html.escape(left.label)}"
+        )
     breakdown = " · ".join(
         f'<span class="{_status_cls(s, st)}">{html.escape(s)}</span> {v:,}'
         for s, v in counts.items()
@@ -817,10 +932,15 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
         }
         for r in rows
     ]
-    # Version columns share what is left after the fixed status/maintainer ones.
+    # Version columns share what is left after the fixed status/maintainer
+    # ones; upstream needs less, as it carries no rpm release.
+    distro_w = {2: 15, 3: 13}.get(len(vcols), 11)
     colgroup = (
         '<col style="width:8.5rem"><col>'
-        + f'<col style="width:{13 if len(vcols) > 2 else 15}rem">' * len(vcols)
+        + "".join(
+            f'<col style="width:{9 if key == "up" else distro_w}rem">'
+            for key, _label in vcols
+        )
         + '<col style="width:13rem">'
     )
     thead = (
@@ -839,6 +959,12 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
         f'\n    <li>Maintainers: <a href="{html.escape(MAINTAINERS_REPO)}">'
         f"{html.escape(MAINTAINERS_REPO)}</a> ({html.escape(MAINTAINERS_BRANCH)})</li>"
     )
+    if any(key == "up" for key, _label in vcols):
+        sources += (
+            f'\n    <li>Upstream: <a href="{REPOLOGY_URL}/repository/{REPOLOGY_REPO}">'
+            f"Repology</a> — the newest version it sees in <em>any</em> distribution, "
+            "not a release feed of the project itself</li>"
+        )
     page = HTML_TEMPLATE
     for needle, value in (
         ("__TITLE__", html.escape(title)),
@@ -881,6 +1007,20 @@ def main(argv=None) -> int:
         action="store_true",
         help="probe download.opensuse.org for Leap releases this script does not "
         "know yet and add each one that is published as an extra column",
+    )
+    p.add_argument(
+        "--repology",
+        action="store_true",
+        help="add an Upstream column with the newest version repology.org knows "
+        f"of (cached in {REPOLOGY_CACHE})",
+    )
+    p.add_argument(
+        "--repology-max-age",
+        type=float,
+        default=7.0,
+        metavar="DAYS",
+        help="refetch the repology cache once it is older than this (default: 7; "
+        "0 forces a refetch)",
     )
     p.add_argument(
         "--format",
@@ -949,6 +1089,8 @@ def main(argv=None) -> int:
         reverse=True,
     )
     st = statuses(left, right)
+    # Newest first, left to right: upstream, then the reference distro, then
+    # the compared one, then any older release.
     vcols = [("left", left.label), ("right", right.label)]
     vcols += [(f"x{i}", d.label) for i, d in enumerate(extras)]
 
@@ -958,6 +1100,17 @@ def main(argv=None) -> int:
     if args.maintainer:
         args.maintainers = True
     maint = {} if args.no_maintainers else fetch_maintainers(args.quiet)
+    upstream = (
+        fetch_repology(args.quiet, args.repology_max_age) if args.repology else None
+    )
+    if upstream:
+        vcols.insert(0, ("up", "Upstream"))
+    elif upstream is not None:
+        # An empty result would fill the column with Tumbleweed's own versions,
+        # which is worse than not having the column at all.
+        print("warning: no upstream versions, dropping the Upstream column",
+              file=sys.stderr)
+        upstream = None
 
     data = {}
     for distro in (left, right, *extras):
@@ -976,6 +1129,7 @@ def main(argv=None) -> int:
         args.with_release,
         st,
         maint,
+        upstream,
     )
 
     counts = {s: 0 for s in st.values()}
@@ -993,6 +1147,11 @@ def main(argv=None) -> int:
             sum(1 for r in rows if r["extras"][i]["version"]) for i in range(len(extras))
         ],
     }
+    if upstream is not None:
+        totals["upstream_outdated"] = sum(
+            1 for r in rows
+            if r["left_version"] and r["up"] and r["up"] != r["left_version"]
+        )
 
     if args.only:
         wanted = [o.lower() for o in args.only]
@@ -1029,9 +1188,14 @@ def main(argv=None) -> int:
                 (totals["left"], totals["right"], *totals["extras"]),
             )
         )
+        behind = (
+            f", {totals['upstream_outdated']} behind upstream"
+            if "upstream_outdated" in totals
+            else ""
+        )
         print(
             f"\n{totals['total']} source packages "
-            f"({per_distro}, {totals['both']} in both): "
+            f"({per_distro}, {totals['both']} in both{behind}): "
             + ", ".join(f"{v} {k}" for k, v in counts.items()),
             file=sys.stderr,
         )

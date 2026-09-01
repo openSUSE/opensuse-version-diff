@@ -3,6 +3,9 @@ ARCHIVES_*
 *.gz
 *.part
 
+# Cached "newest version anywhere" data from repology.org
+repology_newest.json
+
 # Local clone of the PackageHub maintainership data
 .packagehub/
 _maintainership.json

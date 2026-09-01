@@ -6,9 +6,10 @@ Compares source package versions between openSUSE distributions (by default
 Tumbleweed vs Leap 16.1) using the `ARCHIVES.gz` indexes published in every
 repository, and adds maintainer information from PackageHub.
 
-Further distributions can ride along as read-only columns — the published page
-shows **Tumbleweed · Leap 16.1 · Leap 16.0**, newest first, and picks up a
-future Leap on its own (see [Extra columns](#extra-columns)).
+Further columns ride along read-only, newest first — the published page shows
+**Upstream · Tumbleweed · Leap 16.1 · Leap 16.0**, picks up a future Leap on
+its own (see [Extra columns](#extra-columns)) and takes upstream versions from
+[Repology](#upstream-versions-from-repology).
 
 Only **x86_64 and noarch** packages are considered. Tumbleweed's ARCHIVES index
 covers no other arch, so counting Leap's `aarch64`/`ppc64le`/`s390x` packages
@@ -35,6 +36,7 @@ merged:
 | Leap 16.0 oss | `https://download.opensuse.org/distribution/leap/16.0/repo/oss/ARCHIVES.gz` | `ARCHIVES_160` |
 | Leap 16.0 non-oss | `https://download.opensuse.org/distribution/leap/16.0/repo/non-oss/ARCHIVES.gz` | `ARCHIVES_160_nonoss` |
 | Maintainers | `https://src.opensuse.org/products/PackageHub.git` (`leap-16.1`) | `.packagehub/_maintainership.json` |
+| Upstream | `https://repology.org/api/v1/projects/` (`--repology`) | `repology_newest.json` |
 
 Only the two compared distributions are downloaded; Leap 16.0 costs nothing
 until you ask for it with `--extra leap160`.
@@ -110,12 +112,60 @@ published as an extra column. An unreleased version costs a single 404, so the
 CI job runs with `--extra leap160 --discover` and the page will grow a Leap
 16.2 column on the day that repository appears — no commit needed here.
 
+## Upstream versions from Repology
+
+`--repology` adds an **Upstream** column, left of `--left`, holding the newest
+version [repology.org](https://repology.org/) has seen:
+
+```sh
+./osdiff.py --repology --extra leap160
+```
+
+Read the column for what it is: Repology's newest version across *every*
+distribution it tracks, not a release feed of the project itself. It is an
+excellent "somebody already packaged something newer" signal and a poor
+citation for "upstream released X". 3610 Tumbleweed packages are behind it.
+
+Only the projects where Tumbleweed is *outdated* are downloaded
+(`?inrepo=opensuse_tumbleweed&outdated=1`, ~17 pages of 200) — for the rest
+Repology by definition knows nothing newer than Tumbleweed, so Tumbleweed's own
+version is the answer and no request is needed. That is ~115 MB instead of the
+~400 MB a full crawl costs; the result is cached in `repology_newest.json`
+(~100 kB) and only refetched once it is older than `--repology-max-age` days
+(default 7, `0` forces it). Requests are one per second with the project's
+`User-Agent`.
+
+Packages Tumbleweed does not have get no upstream version — the query is keyed
+on Tumbleweed's `srcname`, which is also what makes the join exact and saves us
+maintaining a package-name mapping.
+
+### Feeding Repology, later
+
+Repology pulls; there is no upload API. Two things stand in the way today:
+
+- **Leap 16 is not in Repology at all.** It tracks `opensuse_tumbleweed` and
+  the multimedia/games/etc. devel projects, plus `opensuse_leap_15_5` and
+  `15_6` — nothing for 16.0 or 16.1. Adding them is a `repos.d/` YAML pull
+  request against
+  [repology-updater](https://github.com/repology/repology-updater).
+- **Tumbleweed is at risk of removal.** Its
+  [repository page](https://repology.org/repository/opensuse_tumbleweed)
+  currently carries a banner: it "fails to provide actual links to package
+  sources", "redirects to mirror blocked in Russia" and "provides intolerable
+  amount of fake versions, violating Repology's requirements, and is thus
+  subject to removal in the near future unless the problem is resolved".
+
+Both are upstream-repology conversations rather than work for this tool, and
+neither needs the diff to change shape.
+
 ## Options
 
 ```
 --left/--right DISTRO   which distros to compare (tumbleweed, leap161, leap160)
 --extra DISTRO          add a distro as an extra version column (repeatable)
 --discover              probe for Leap releases not known yet and add them too
+--repology              add an Upstream column from repology.org
+--repology-max-age N    refetch that cache when older than N days (default 7)
 --format FMT            table (default), md, csv, json, html
 --only STATUS           filter by status substring, e.g. --only older (repeatable)
 --grep REGEX            filter source package names
@@ -146,9 +196,9 @@ CI job runs with `--extra leap160 --discover` and the page will grow a Leap
 
 ## Current numbers (Tumbleweed vs Leap 16.1, oss + non-oss, x86_64 + noarch)
 
-Run with `--extra leap160`: 17532 source packages in total — 17143 in
-Tumbleweed, 10574 in Leap 16.1 and 10551 in Leap 16.0, of which 10264 exist in
-both compared distros:
+Run with `--extra leap160 --repology`: 17532 source packages in total — 17143
+in Tumbleweed, 10574 in Leap 16.1 and 10551 in Leap 16.0, of which 10264 exist
+in both compared distros, and 3610 are behind upstream in Tumbleweed:
 
 | Status | Count |
 | --- | --- |
@@ -182,4 +232,5 @@ The ARCHIVES indexes are never committed — `.gitignore` keeps them out. CI
 caches the compressed ones between runs and passes `--refresh`, so a scheduled
 rebuild normally costs six HEAD requests for the indexes plus eight for
 `--discover`, and downloads only what changed upstream. A cold cache pulls
-~360 MB.
+~360 MB. The Repology cache rides along in the same cache entry, which is what
+keeps that fetch weekly rather than nightly.
