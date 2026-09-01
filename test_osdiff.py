@@ -107,6 +107,45 @@ class DisplayIsUntouched(unittest.TestCase):
         self.assertEqual(p.cmp_rules, ("cpan-decimal",))
 
 
+class PerfectionStatus(unittest.TestCase):
+    """Perfection is Same plus "and nobody ships anything newer"."""
+
+    TW = osdiff.Distro("tumbleweed", "Tumbleweed", "TW", [])
+    LEAP = osdiff.Distro("leap161", "Leap 16.1", "Leap", [])
+
+    def rows(self, upstream):
+        st = osdiff.statuses(self.TW, self.LEAP, upstream is not None)
+        left = {n: {v: Package(n, v, "1") for v in (vs[0],)}
+                for n, vs in self.PKGS.items()}
+        right = {n: {vs[1]: Package(n, vs[1], "1")} for n, vs in self.PKGS.items()}
+        rows = osdiff.compare(left, right, [], False, st, {}, upstream)
+        return {r["name"]: r["status"] for r in rows}
+
+    PKGS = {
+        "level-and-current": ("1.0", "1.0"),   # Repology knows nothing newer
+        "level-but-stale": ("1.0", "1.0"),     # …but Repology does
+        "behind": ("2.0", "1.0"),
+    }
+
+    def test_splits_out_of_same(self):
+        got = self.rows({"level-but-stale": "3.0"})
+        self.assertEqual(got["level-and-current"], "Perfection")
+        self.assertEqual(got["level-but-stale"], "Same")
+        self.assertEqual(got["behind"], "Older-in-Leap")
+
+    def test_absent_without_an_upstream_column(self):
+        # No --repology means no way to earn it, so the status must not appear.
+        got = self.rows(None)
+        self.assertEqual(set(got.values()), {"Same", "Older-in-Leap"})
+        self.assertNotIn("perfect", osdiff.statuses(self.TW, self.LEAP))
+
+    def test_never_awarded_to_a_mismatch(self):
+        # Same-in-name only: an outdated pair stays Older even with no upstream
+        # entry of its own.
+        got = self.rows({})
+        self.assertEqual(got["behind"], "Older-in-Leap")
+
+
 class Rpmvercmp(unittest.TestCase):
     """The fallback CI runs on must agree with rpm, where rpm is available."""
 

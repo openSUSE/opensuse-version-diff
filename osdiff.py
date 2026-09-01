@@ -46,14 +46,26 @@ ARCHES = frozenset({"x86_64", "noarch"})
 
 # Status values.  Keep the first word greppable and stable: whatever distros are
 # compared, `grep Older` always means "the compared distro is behind".
-def statuses(left: "Distro", right: "Distro") -> dict:
-    return {
+def statuses(left: "Distro", right: "Distro", upstream: bool = False) -> dict:
+    """The status vocabulary for this run.
+
+    `Perfection` only exists when there is an upstream column to earn it
+    against; without --repology the set stays at five, rather than offering a
+    filter that can never match.
+    """
+    st = {
         "older": f"Older-in-{right.tag}",
         "newer": f"Newer-in-{right.tag}",
         "same": "Same",
         "only_left": f"Only-in-{left.tag}",
         "only_right": f"Only-in-{right.tag}",
     }
+    if upstream:
+        # Both sides level *and* nobody ships anything newer.  A subset of
+        # Same, split out because "as good as it gets" is the thing worth
+        # seeing in a table that is otherwise a list of what is behind.
+        st = {"perfect": "Perfection", **st}
+    return st
 
 
 @dataclass
@@ -664,9 +676,15 @@ def compare(left: dict, right: dict, extras: list, with_release: bool,
         rv = right.get(name)
         lp = newest(lv, with_release) if lv else None
         rp = newest(rv, with_release) if rv else None
+        up = upstream.get(name) if upstream is not None else None
         if lp and rp:
             rc = evr_cmp(rp, lp, with_release)  # compared distro vs reference
             status = st["same"] if rc == 0 else (st["newer"] if rc > 0 else st["older"])
+            # Level with each other and with the newest anyone ships.  `up` is
+            # only set for the projects Repology calls outdated, so "nothing
+            # fetched" is itself the good answer.
+            if rc == 0 and "perfect" in st and not up:
+                status = st["perfect"]
         elif lp:
             status = st["only_left"]
         else:
@@ -687,7 +705,7 @@ def compare(left: dict, right: dict, extras: list, with_release: bool,
             "maintainers": maint.get(name, []),
         }
         if upstream is not None:
-            row["up"] = upstream.get(name) or (lp.version if lp else "")
+            row["up"] = up or (lp.version if lp else "")
         # x0, x1, … are the flat columns the text formats and the page print;
         # `extras` keeps the same detail the left/right side gets, for json.
         row["extras"] = []
@@ -900,6 +918,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .s-Older { color: var(--older); }
   .s-Newer { color: var(--newer); }
   .s-Same  { color: var(--same); font-weight: 400; }
+  /* Same and Perfection share the green; bold and a mark are what separate
+     "level with Tumbleweed" from "level with everyone".  The mark is CSS only,
+     so the status string stays plain ASCII for grep, CSV and the filter. */
+  .s-Perfection { color: var(--same); }
+  .s-Perfection::after { content: " ✦"; opacity: .65; }
   .s-OnlyL { color: var(--only-l); }
   .s-OnlyR { color: var(--only-r); }
   #count { color: var(--muted); margin: .75rem 0; }
@@ -908,7 +931,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 <header>
   <h1><img src="https://static.opensuse.org/favicon.svg" alt="">__TITLE__</h1>
-  <p><a href="__PROJECT__#readme">README</a> · <a href="__PROJECT__">source on GitHub</a></p>
+  <p><a href="__PROJECT__/issues/new">Report an issue</a> ·
+     <a href="__PROJECT__#readme">README</a> ·
+     <a href="__PROJECT__">source on GitHub</a></p>
 </header>
 <p class="sub">__SUB__</p>
 <p class="sub breakdown">__BREAKDOWN__</p>
@@ -1007,8 +1032,7 @@ def _family(labels) -> str:
     return " ".join(common) or " / ".join(labels)
 
 
-def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
-    st = statuses(left, right)
+def emit_html(rows, left, right, extras, vcols, counts, out, totals, st) -> None:
     right_side = _family([right.label] + [d.label for d in extras])
     title = f"{left.label} vs {right_side} — source package versions"
     sub = (
@@ -1039,6 +1063,11 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
         st["only_left"]: f"Not in {right.label}",
         st["only_right"]: f"Not in {left.label}",
     }
+    if "perfect" in st:
+        hints[st["perfect"]] = (
+            f"{left.label} and {right.label} are level and Repology knows "
+            "nothing newer anywhere — as current as a package gets"
+        )
     breakdown = " · ".join(
         f'<span class="{_status_cls(s, st)}" title="{html.escape(hints[s])}">'
         f"{html.escape(s)}</span> {v:,}"
@@ -1216,7 +1245,6 @@ def main(argv=None) -> int:
         key=lambda d: tuple(int(n) for n in re.findall(r"\d+", d.label)) or (0,),
         reverse=True,
     )
-    st = statuses(left, right)
     # Newest first, left to right: upstream, then the reference distro, then
     # the compared one, then any older release.
     vcols = [("left", left.label), ("right", right.label)]
@@ -1239,6 +1267,8 @@ def main(argv=None) -> int:
         print("warning: no upstream versions, dropping the Upstream column",
               file=sys.stderr)
         upstream = None
+    # Only now is it known whether Perfection is on the menu.
+    st = statuses(left, right, upstream is not None)
 
     data = {}
     for distro in (left, right, *extras):
@@ -1303,7 +1333,7 @@ def main(argv=None) -> int:
         elif args.format == "json":
             emit_json(rows, left, right, extras, counts, out, totals)
         elif args.format == "html":
-            emit_html(rows, left, right, extras, vcols, counts, out, totals)
+            emit_html(rows, left, right, extras, vcols, counts, out, totals, st)
     finally:
         if args.output:
             out.close()

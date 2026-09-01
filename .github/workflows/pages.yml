@@ -80,6 +80,7 @@ jobs:
           grep -q 'data-k="x0"' _site/index.html
           grep -q 'data-k="up"' _site/index.html
           grep -q '"n": {' _site/index.html  # normalized versions still marked
+          grep -q 'Perfection' _site/index.html
           ls -la _site
 
       - uses: actions/upload-pages-artifact@v3

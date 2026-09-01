@@ -67,11 +67,21 @@ Every row carries one greppable status. The first word is always the same, so
 
 | Status | Meaning | On the page |
 | --- | --- | --- |
+| `Perfection` | level with Tumbleweed *and* with upstream | geeko green, bold, ✦ |
 | `Older-in-Leap` | Leap is behind Tumbleweed | radish red |
 | `Newer-in-Leap` | Leap is ahead | orange |
-| `Same` | same upstream version | geeko green |
+| `Same` | same as Tumbleweed, but something newer exists | geeko green |
 | `Only-in-TW` | not in the compared Leap | plum purple |
 | `Only-in-Leap` | not in Tumbleweed | blue |
+
+`Perfection` is a subset of `Same` that only exists with
+[`--repology`](#upstream-versions-from-repology): both sides level *and*
+Repology knows of nothing newer anywhere. Without an upstream column there is
+no way to earn it, so the vocabulary stays at five rather than offering a
+filter that can never match. It splits 5332 `Same` rows into 4290 genuinely
+current and 1042 that merely match Tumbleweed — so `--only same` means
+something sharper once upstream is in play, and `--only same --only perfect`
+gets the old set back.
 
 `Newer-in-Leap` is orange rather than red because it is a question, not a
 failure: Leap being ahead of Tumbleweed is usually fine, but it is also what a
@@ -160,6 +170,9 @@ distribution it tracks, not a release feed of the project itself. It is an
 excellent "somebody already packaged something newer" signal and a poor
 citation for "upstream released X". 3610 Tumbleweed packages are behind it.
 
+It also earns rows the [`Perfection`](#status-column) status: Leap level with
+Tumbleweed *and* nothing newer known anywhere. 4290 packages manage it.
+
 Only the projects where Tumbleweed is *outdated* are downloaded
 (`?inrepo=opensuse_tumbleweed&outdated=1`, ~17 pages of 200) — for the rest
 Repology by definition knows nothing newer than Tumbleweed, so Tumbleweed's own
@@ -236,9 +249,10 @@ in both compared distros, and 3610 are behind upstream in Tumbleweed:
 
 | Status | Count |
 | --- | --- |
+| Perfection | 4290 |
 | Older-in-Leap | 4919 |
 | Newer-in-Leap | 13 |
-| Same | 5332 |
+| Same | 1042 |
 | Only-in-TW | 6879 |
 | Only-in-Leap | 389 |
 
