@@ -832,21 +832,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <style>
   /* openSUSE brand palette.  The bright brand hues are legible on the dark
      maple-maroon surface but none of them reaches 4.5:1 on bagel-beige, so
-     light mode uses same-hue steps darkened in OKLab until they pass. */
+     light mode uses same-hue steps darkened until they pass.
+
+     Status colours read as a verdict, not a rainbow: Geeko Green for Same
+     because level is the good outcome, Radish Red for Older, and chameleon's
+     orange (#b96a35) for Newer — Leap ahead of Tumbleweed is not an error but
+     it is a question, usually "did this skip Factory first?".  Red and orange
+     sit ~18 degrees of hue apart with clearly different saturation, which is
+     what keeps the two apart at 13px. */
   :root {
     --geeko-green: #42cd42; --plum-purple: #a498ff; --radish-red: #ff5b45;
     --bagel-beige: #fff8ee; --gabbro-gray: #b8aeab; --maple-maroon: #301a14;
 
     --bg: #fff8ee; --surface: #f4ece3; --fg: #301a14;
     --muted: #6d5d58; --line: #d8cfc9; --accent: #00631f; --ring: #42cd42;
-    --older: #e04a1e; --newer: #00631f; --same: #6d5d58;
+    --older: #c33320; --newer: #9c5a2a; --same: #00631f;
     --only-l: #7465c7; --only-r: #00668c;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #301a14; --surface: #3c2722; --fg: #fff8ee;
       --muted: #b8aeab; --line: #56433e; --accent: #42cd42; --ring: #42cd42;
-      --older: #ff5b45; --newer: #42cd42; --same: #b8aeab;
+      --older: #ff5b45; --newer: #dd9155; --same: #42cd42;
       --only-l: #a498ff; --only-r: #00c8ff;
     }
   }
@@ -936,6 +943,9 @@ let rows = DATA, sortKey = null, sortDir = 1;
 // Version columns, left to right; the row keys they read.
 const VCOLS = __VCOLS__;
 const ONLY_LEFT = "__ONLY_LEFT__";
+// What each status means, on hover — the orange one in particular is a
+// question rather than a verdict, and the tooltip is where that fits.
+const HINTS = __HINTS__;
 // Both "only" statuses start with the same word, so they need telling apart.
 function cls(s) {
   if (s.startsWith('Only')) return s === ONLY_LEFT ? 's-OnlyL' : 's-OnlyR';
@@ -956,7 +966,8 @@ function render() {
   count.textContent = view.length.toLocaleString('en-US') + ' of ' +
                       rows.length.toLocaleString('en-US') + ' source packages';
   tb.innerHTML = view.map(r =>
-    `<tr><td class="status ${cls(r.status)}">${esc(r.status)}</td><td>${esc(r.name)}</td>` +
+    `<tr><td class="status ${cls(r.status)}" title="${esc(HINTS[r.status] || '')}"` +
+    `>${esc(r.status)}</td><td>${esc(r.name)}</td>` +
     VCOLS.map(k => {
       // r.n[k] is what this cell was actually compared as; say so rather than
       // quietly showing one version and comparing another.
@@ -1017,8 +1028,20 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
             f" · {totals['upstream_outdated']:,} behind upstream in "
             f"{html.escape(left.label)}"
         )
+    hints = {
+        st["same"]: f"Same upstream version in {left.label} and {right.label}",
+        st["older"]: f"{right.label} is behind {left.label}",
+        st["newer"]: (
+            f"{right.label} is ahead of {left.label} — not an error, but worth "
+            f"checking whether the change reached {left.label} first"
+            + (" (Factory first)" if left.key == "tumbleweed" else "")
+        ),
+        st["only_left"]: f"Not in {right.label}",
+        st["only_right"]: f"Not in {left.label}",
+    }
     breakdown = " · ".join(
-        f'<span class="{_status_cls(s, st)}">{html.escape(s)}</span> {v:,}'
+        f'<span class="{_status_cls(s, st)}" title="{html.escape(hints[s])}">'
+        f"{html.escape(s)}</span> {v:,}"
         for s, v in counts.items()
     )
     options = "".join(
@@ -1082,6 +1105,7 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
         ("__SOURCES__", sources),
         ("__OPTIONS__", options),
         ("__ONLY_LEFT__", html.escape(st["only_left"])),
+        ("__HINTS__", json.dumps(hints).replace("<", "\\u003c")),
         ("__DATA__", json.dumps(slim).replace("</", "<\\/").replace("&", "\\u0026").replace("<", "\\u003c")),
     ):
         page = page.replace(needle, value)

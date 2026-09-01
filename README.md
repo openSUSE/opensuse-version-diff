@@ -65,13 +65,18 @@ non-oss packages are not listed there and show up empty.
 Every row carries one greppable status. The first word is always the same, so
 `grep Older` works no matter which distros are compared:
 
-| Status | Meaning |
-| --- | --- |
-| `Older-in-Leap` | Leap is behind Tumbleweed |
-| `Newer-in-Leap` | Leap is ahead |
-| `Same` | same upstream version |
-| `Only-in-TW` | not in the compared Leap |
-| `Only-in-Leap` | not in Tumbleweed |
+| Status | Meaning | On the page |
+| --- | --- | --- |
+| `Older-in-Leap` | Leap is behind Tumbleweed | radish red |
+| `Newer-in-Leap` | Leap is ahead | orange |
+| `Same` | same upstream version | geeko green |
+| `Only-in-TW` | not in the compared Leap | plum purple |
+| `Only-in-Leap` | not in Tumbleweed | blue |
+
+`Newer-in-Leap` is orange rather than red because it is a question, not a
+failure: Leap being ahead of Tumbleweed is usually fine, but it is also what a
+submission that skipped Factory first looks like, so those 13 rows are the ones
+worth a look. Hovering any status on the page spells this out.
 
 Extra columns do not get statuses of their own — one per side beats one per
 release, and the version columns already say which Leap has what. So
