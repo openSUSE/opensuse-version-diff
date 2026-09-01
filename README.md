@@ -6,6 +6,10 @@ Compares source package versions between openSUSE distributions (by default
 Tumbleweed vs Leap 16.1) using the `ARCHIVES.gz` indexes published in every
 repository, and adds maintainer information from PackageHub.
 
+Further distributions can ride along as read-only columns — the published page
+shows **Tumbleweed · Leap 16.1 · Leap 16.0**, newest first, and picks up a
+future Leap on its own (see [Extra columns](#extra-columns)).
+
 Only **x86_64 and noarch** packages are considered. Tumbleweed's ARCHIVES index
 covers no other arch, so counting Leap's `aarch64`/`ppc64le`/`s390x` packages
 would only invent rows that look Leap-only.
@@ -28,7 +32,12 @@ merged:
 | Tumbleweed non-oss | `https://download.opensuse.org/tumbleweed/repo/non-oss/ARCHIVES.gz` | `ARCHIVES_TW_nonoss` |
 | Leap 16.1 oss | `https://download.opensuse.org/distribution/leap/16.1/repo/oss/ARCHIVES.gz` | `ARCHIVES_161` |
 | Leap 16.1 non-oss | `https://download.opensuse.org/distribution/leap/16.1/repo/non-oss/ARCHIVES.gz` | `ARCHIVES_161_nonoss` |
+| Leap 16.0 oss | `https://download.opensuse.org/distribution/leap/16.0/repo/oss/ARCHIVES.gz` | `ARCHIVES_160` |
+| Leap 16.0 non-oss | `https://download.opensuse.org/distribution/leap/16.0/repo/non-oss/ARCHIVES.gz` | `ARCHIVES_160_nonoss` |
 | Maintainers | `https://src.opensuse.org/products/PackageHub.git` (`leap-16.1`) | `.packagehub/_maintainership.json` |
+
+Only the two compared distributions are downloaded; Leap 16.0 costs nothing
+until you ask for it with `--extra leap160`.
 
 Missing inputs are fetched automatically: the ARCHIVES files over HTTP (and
 decompressed), the maintainership data via a shallow sparse `git clone` — git
@@ -43,7 +52,7 @@ download.opensuse.org admins can attribute (and complain about) the traffic.
 
 non-oss contributes 31 source packages (`discord`, `opera`, `steam`, `unrar`,
 `wine-mono`, …); the JSON export records per package which repository each side
-came from, in `left_repos` / `right_repos`.
+came from, in `left_repos` / `right_repos` (and `extras[].repos`).
 
 Maintainers are only known for the ~5.3k packages Leap gets from PackageHub;
 the core packages inherited from SLES/Factory (release `160099.*`) and the
@@ -59,8 +68,14 @@ Every row carries one greppable status. The first word is always the same, so
 | `Older-in-Leap` | Leap is behind Tumbleweed |
 | `Newer-in-Leap` | Leap is ahead |
 | `Same` | same upstream version |
-| `Only-in-TW` | not in Leap at all |
+| `Only-in-TW` | not in the compared Leap |
 | `Only-in-Leap` | not in Tumbleweed |
+
+Extra columns do not get statuses of their own — one per side beats one per
+release, and the version columns already say which Leap has what. So
+`Only-in-Leap` covers a package any Leap column has, and `Only-in-TW` a package
+the compared Leap lost even if an older one still ships it (33 packages are in
+Tumbleweed and Leap 16.0 but were dropped in 16.1). Missing versions read `—`.
 
 Only the **upstream version** is compared, not the release — Leap and
 Tumbleweed use unrelated release schemes (`bp161.1.2` vs `1.2`), so comparing
@@ -72,10 +87,35 @@ A handful of `Newer-in-Leap` hits are version-scheme artifacts rather than real
 regressions — Tumbleweed's normalized perl versions (`1.291.100` vs `1.2911`)
 or a stray `v` prefix compare that way under rpm rules.
 
+## Extra columns
+
+`--extra DISTRO` (repeatable) adds a distribution as a further version column
+to the right of `--right`, newest first — an older Leap is the least
+interesting column, so it lands furthest from the versions the diff is about:
+
+```sh
+./osdiff.py --extra leap160                    # Tumbleweed | Leap 16.1 | Leap 16.0
+./osdiff.py --extra leap160 --format html -o diff.html
+```
+
+Extra columns are read-only annotations — only `--left` and `--right` are
+compared. They do widen the row set, though, so a package that only survives in
+an extra column is not silently lost: it shows up as `Only-in-Leap` with an
+empty 16.1 cell (79 packages exist in Leap 16.0 but in neither Tumbleweed nor
+Leap 16.1).
+
+`--discover` HEAD-probes `download.opensuse.org` for the Leap releases this
+script has no entry for (16.2 … 16.9) and adds every one that is already
+published as an extra column. An unreleased version costs a single 404, so the
+CI job runs with `--extra leap160 --discover` and the page will grow a Leap
+16.2 column on the day that repository appears — no commit needed here.
+
 ## Options
 
 ```
 --left/--right DISTRO   which distros to compare (tumbleweed, leap161, leap160)
+--extra DISTRO          add a distro as an extra version column (repeatable)
+--discover              probe for Leap releases not known yet and add them too
 --format FMT            table (default), md, csv, json, html
 --only STATUS           filter by status substring, e.g. --only older (repeatable)
 --grep REGEX            filter source package names
@@ -106,8 +146,9 @@ or a stray `v` prefix compare that way under rpm rules.
 
 ## Current numbers (Tumbleweed vs Leap 16.1, oss + non-oss, x86_64 + noarch)
 
-17453 source packages in total — 17143 in Tumbleweed, 10574 in Leap 16.1, of
-which 10264 exist in both:
+Run with `--extra leap160`: 17532 source packages in total — 17143 in
+Tumbleweed, 10574 in Leap 16.1 and 10551 in Leap 16.0, of which 10264 exist in
+both compared distros:
 
 | Status | Count |
 | --- | --- |
@@ -115,7 +156,7 @@ which 10264 exist in both:
 | Newer-in-Leap | 26 |
 | Same | 5211 |
 | Only-in-TW | 6879 |
-| Only-in-Leap | 310 |
+| Only-in-Leap | 389 |
 
 The JSON export carries the same figures under `totals` and `summary`.
 
@@ -139,5 +180,6 @@ The deployed site contains:
 
 The ARCHIVES indexes are never committed — `.gitignore` keeps them out. CI
 caches the compressed ones between runs and passes `--refresh`, so a scheduled
-rebuild normally costs four HEAD requests and downloads only what changed
-upstream. A cold cache pulls ~230 MB.
+rebuild normally costs six HEAD requests for the indexes plus eight for
+`--discover`, and downloads only what changed upstream. A cold cache pulls
+~360 MB.

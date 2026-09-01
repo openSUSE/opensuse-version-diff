@@ -68,17 +68,18 @@ class Distro:
     repos: list
 
 
+def _repos(base, oss_path, names=("oss", "non-oss")) -> list:
+    """One Repo per repository; non-oss reuses the oss naming."""
+    return [
+        Repo(n, oss_path if n == "oss" else f"{oss_path}_{n.replace('-', '')}",
+             f"{base}/{n}/ARCHIVES.gz")
+        for n in names
+    ]
+
+
 def _distro(key, label, tag, base, oss_path) -> Distro:
-    """Both repositories of one distribution; non-oss reuses the oss naming."""
-    return Distro(
-        key,
-        label,
-        tag,
-        [
-            Repo("oss", oss_path, f"{base}/oss/ARCHIVES.gz"),
-            Repo("non-oss", oss_path + "_nonoss", f"{base}/non-oss/ARCHIVES.gz"),
-        ],
-    )
+    """Both repositories of one distribution."""
+    return Distro(key, label, tag, _repos(base, oss_path))
 
 
 DISTROS = {
@@ -104,6 +105,12 @@ DISTROS = {
         "ARCHIVES_160",
     ),
 }
+
+# --discover probes for Leap releases that do not have an entry above yet, so a
+# 16.2 shows up in the published table on the day its repository goes live
+# instead of on the day somebody remembers to patch this file.
+LEAP_BASE = "https://download.opensuse.org/distribution/leap"
+LEAP_PROBE = [f"16.{minor}" for minor in range(0, 10)]
 
 
 # Sent on every HTTP request so download.opensuse.org admins can attribute the
@@ -258,6 +265,43 @@ def _remote_meta(url: str) -> dict:
             "last_modified": resp.headers.get("Last-Modified"),
             "size": resp.headers.get("Content-Length"),
         }
+
+
+def _exists(url: str) -> bool:
+    try:
+        _remote_meta(url)
+        return True
+    except urllib.error.HTTPError:  # 404 on a release that is not out yet
+        return False
+    except (urllib.error.URLError, OSError) as err:
+        print(f"warning: cannot probe {url} ({err})", file=sys.stderr)
+        return False
+
+
+def discover_leaps(quiet: bool = False) -> list:
+    """Probe download.opensuse.org for Leap releases DISTROS does not know.
+
+    A version is only taken if its oss repository has an ARCHIVES.gz, so an
+    unreleased 16.7 costs exactly one 404 and nothing else.  non-oss is probed
+    only once oss is there, and skipped when absent — an early release may well
+    publish the two at different times.
+    """
+    found = []
+    for version in LEAP_PROBE:
+        key = "leap" + version.replace(".", "")
+        if key in DISTROS:
+            continue
+        base = f"{LEAP_BASE}/{version}/repo"
+        path = "ARCHIVES_" + version.replace(".", "")
+        oss, non_oss = _repos(base, path)
+        if not _exists(oss.url):
+            continue
+        repos = [oss] + ([non_oss] if _exists(non_oss.url) else [])
+        if not quiet:
+            print(f"discovered Leap {version} ({', '.join(r.name for r in repos)})",
+                  file=sys.stderr)
+        found.append(Distro(key, f"Leap {version}", "Leap" + version.replace(".", ""), repos))
+    return found
 
 
 def fetch(repo: Repo, quiet: bool = False, refresh: bool = False) -> str:
@@ -435,9 +479,21 @@ def fetch_maintainers(quiet: bool = False) -> dict:
 # --------------------------------------------------------------------------
 
 
-def compare(left: dict, right: dict, with_release: bool, st: dict, maint: dict) -> list:
+def compare(left: dict, right: dict, extras: list, with_release: bool,
+            st: dict, maint: dict) -> list:
+    """Diff left against right, annotated with the versions of `extras`.
+
+    `extras` is a list of (Distro, packages) pairs.  Their versions are shown
+    but not compared; they do widen the set of rows, so a package only an older
+    Leap still ships is not lost.  Such a row is `Only-in-<right>` like any
+    other package Tumbleweed does not have — which Leap it survived in is what
+    the version columns are for, and one status per side beats one per release.
+    """
     rows = []
-    for name in sorted(set(left) | set(right)):
+    names = set(left) | set(right)
+    for _distro_, pkgs in extras:
+        names |= set(pkgs)
+    for name in sorted(names):
         lv = left.get(name)
         rv = right.get(name)
         lp = newest(lv, with_release) if lv else None
@@ -449,23 +505,39 @@ def compare(left: dict, right: dict, with_release: bool, st: dict, maint: dict) 
             status = st["only_left"]
         else:
             status = st["only_right"]
-        rows.append(
-            {
-                "name": name,
-                "status": status,
-                "left": lp.vr if lp else "",
-                "right": rp.vr if rp else "",
-                "left_version": lp.version if lp else "",
-                "right_version": rp.version if rp else "",
-                "left_all": sorted(lv) if lv else [],
-                "right_all": sorted(rv) if rv else [],
-                "left_arches": sorted(lp.arches) if lp else [],
-                "right_arches": sorted(rp.arches) if rp else [],
-                "left_repos": sorted(lp.repos) if lp else [],
-                "right_repos": sorted(rp.repos) if rp else [],
-                "maintainers": maint.get(name, []),
-            }
-        )
+        row = {
+            "name": name,
+            "status": status,
+            "left": lp.vr if lp else "",
+            "right": rp.vr if rp else "",
+            "left_version": lp.version if lp else "",
+            "right_version": rp.version if rp else "",
+            "left_all": sorted(lv) if lv else [],
+            "right_all": sorted(rv) if rv else [],
+            "left_arches": sorted(lp.arches) if lp else [],
+            "right_arches": sorted(rp.arches) if rp else [],
+            "left_repos": sorted(lp.repos) if lp else [],
+            "right_repos": sorted(rp.repos) if rp else [],
+            "maintainers": maint.get(name, []),
+        }
+        # x0, x1, … are the flat columns the text formats and the page print;
+        # `extras` keeps the same detail the left/right side gets, for json.
+        row["extras"] = []
+        for i, (distro, pkgs) in enumerate(extras):
+            ev = pkgs.get(name)
+            ep = newest(ev, with_release) if ev else None
+            row[f"x{i}"] = ep.vr if ep else ""
+            row["extras"].append(
+                {
+                    "key": distro.key,
+                    "version": ep.version if ep else "",
+                    "version_release": ep.vr if ep else "",
+                    "all": sorted(ev) if ev else [],
+                    "arches": sorted(ep.arches) if ep else [],
+                    "repos": sorted(ep.repos) if ep else [],
+                }
+            )
+        rows.append(row)
     return rows
 
 
@@ -474,13 +546,11 @@ def compare(left: dict, right: dict, with_release: bool, st: dict, maint: dict) 
 # --------------------------------------------------------------------------
 
 
-def emit_table(rows, left_label, right_label, out, maintainers=False) -> None:
+def emit_table(rows, vcols, out, maintainers=False) -> None:
     cols = [
-        ("status", "STATUS", 14),
+        ("status", "STATUS", 16),
         ("name", "SOURCE-PACKAGE", 48),
-        ("left", left_label.upper(), 28),
-        ("right", right_label.upper(), 28),
-    ]
+    ] + [(key, label.upper(), 28) for key, label in vcols]
     if maintainers:
         cols.append(("maint", "MAINTAINERS", 40))
     # Cap the padding so a handful of git-hash versions don't stretch every row;
@@ -503,24 +573,23 @@ def with_maint_column(rows) -> list:
     return rows
 
 
-def emit_markdown(rows, left_label, right_label, out, maintainers=False) -> None:
+def emit_markdown(rows, vcols, out, maintainers=False) -> None:
     extra_h, extra_s = (" Maintainers |", " --- |") if maintainers else ("", "")
-    print(f"| Status | Source package | {left_label} | {right_label} |{extra_h}", file=out)
-    print(f"| --- | --- | --- | --- |{extra_s}", file=out)
+    heads = "".join(f" {label} |" for _key, label in vcols)
+    print(f"| Status | Source package |{heads}{extra_h}", file=out)
+    print("| --- | --- |" + " --- |" * len(vcols) + extra_s, file=out)
     for r in rows:
         extra = f" {r['maint'] or '—'} |" if maintainers else ""
-        print(
-            f"| {r['status']} | {r['name']} | {r['left'] or '—'} | {r['right'] or '—'} |{extra}",
-            file=out,
-        )
+        cells = "".join(f" {r[key] or '—'} |" for key, _label in vcols)
+        print(f"| {r['status']} | {r['name']} |{cells}{extra}", file=out)
 
 
-def emit_csv(rows, left_label, right_label, out, maintainers=False) -> None:
+def emit_csv(rows, vcols, out, maintainers=False) -> None:
     w = csv.writer(out)
-    head = ["status", "source_package", left_label, right_label]
+    head = ["status", "source_package"] + [label for _key, label in vcols]
     w.writerow(head + ["maintainers"] if maintainers else head)
     for r in rows:
-        row = [r["status"], r["name"], r["left"], r["right"]]
+        row = [r["status"], r["name"]] + [r[key] for key, _label in vcols]
         w.writerow(row + [" ".join(r["maintainers"])] if maintainers else row)
 
 
@@ -532,16 +601,18 @@ def _distro_meta(d: Distro) -> dict:
     }
 
 
-def emit_json(rows, left, right, counts, out, totals) -> None:
+def emit_json(rows, left, right, extras, counts, out, totals) -> None:
     json.dump(
         {
             "left": _distro_meta(left),
             "right": _distro_meta(right),
+            "extras": [_distro_meta(d) for d in extras],
             "totals": {
                 "source_packages": totals["total"],
                 left.key: totals["left"],
                 right.key: totals["right"],
                 "in_both": totals["both"],
+                **{d.key: n for d, n in zip(extras, totals["extras"])},
             },
             "summary": counts,
             "packages": rows,
@@ -557,6 +628,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>__TITLE__</title>
+<link rel="icon" href="https://static.opensuse.org/favicon.svg" type="image/svg+xml">
 <style>
   /* openSUSE brand palette.  The bright brand hues are legible on the dark
      maple-maroon surface but none of them reaches 4.5:1 on bagel-beige, so
@@ -584,6 +656,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   header { display: flex; align-items: baseline; justify-content: space-between;
            gap: 1rem; flex-wrap: wrap; }
   h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  /* Decorative Geeko next to the title; alt="" keeps it out of the heading
+     text for screen readers, and a broken CDN leaves the layout intact. */
+  h1 img { width: 1.4em; height: 1.4em; vertical-align: -.3em; margin-right: .35rem; }
   p.sub { color: var(--muted); margin: 0 0 .35rem; }
   p.sub strong { color: var(--fg); }
   p.breakdown { margin-bottom: 1.5rem; }
@@ -623,7 +698,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>__TITLE__</h1>
+  <h1><img src="https://static.opensuse.org/favicon.svg" alt="">__TITLE__</h1>
   <p><a href="__PROJECT__#readme">README</a> · <a href="__PROJECT__">source on GitHub</a></p>
 </header>
 <p class="sub">__SUB__</p>
@@ -634,15 +709,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 <p id="count"></p>
 <table>
-  <colgroup>
-    <col style="width:8.5rem"><col><col style="width:15rem">
-    <col style="width:15rem"><col style="width:13rem">
-  </colgroup>
-  <thead><tr>
-    <th data-k="status">Status</th><th data-k="name">Source package</th>
-    <th data-k="left">__LEFT__</th><th data-k="right">__RIGHT__</th>
-    <th data-k="maint">Maintainers</th>
-  </tr></thead>
+  <colgroup>__COLGROUP__</colgroup>
+  <thead><tr>__THEAD__</tr></thead>
   <tbody id="tb"></tbody>
 </table>
 <footer>
@@ -660,6 +728,8 @@ const DATA = __DATA__;
 const tb = document.getElementById('tb'), q = document.getElementById('q'),
       st = document.getElementById('st'), count = document.getElementById('count');
 let rows = DATA, sortKey = null, sortDir = 1;
+// Version columns, left to right; the row keys they read.
+const VCOLS = __VCOLS__;
 const ONLY_LEFT = "__ONLY_LEFT__";
 // Both "only" statuses start with the same word, so they need telling apart.
 function cls(s) {
@@ -674,7 +744,7 @@ function render() {
       (!needle || r.name.toLowerCase().includes(needle) ||
                   r.maint.toLowerCase().includes(needle)));
   if (sortKey) {
-    const num = sortKey === 'left' || sortKey === 'right';  // numeric only for versions
+    const num = VCOLS.includes(sortKey);  // numeric only for versions
     view = [...view].sort((a, b) =>
       sortDir * String(a[sortKey]).localeCompare(String(b[sortKey]), 'en', {numeric: num}));
   }
@@ -682,8 +752,7 @@ function render() {
                       rows.length.toLocaleString('en-US') + ' source packages';
   tb.innerHTML = view.map(r =>
     `<tr><td class="status ${cls(r.status)}">${esc(r.status)}</td><td>${esc(r.name)}</td>` +
-    `<td class="v" title="${esc(r.left)}">${esc(r.left) || '—'}</td>` +
-    `<td class="v" title="${esc(r.right)}">${esc(r.right) || '—'}</td>` +
+    VCOLS.map(k => `<td class="v" title="${esc(r[k])}">${esc(r[k]) || '—'}</td>`).join('') +
     `<td class="m" title="${esc(r.maint)}">${esc(r.maint) || '—'}</td></tr>`).join('');
 }
 q.oninput = st.onchange = render;
@@ -698,23 +767,42 @@ render();
 """
 
 
-def _status_cls(status: str, left: "Distro", right: "Distro") -> str:
+def _status_cls(status: str, st: dict) -> str:
     """CSS class for a status — mirrors cls() in the page's own script."""
     if status.startswith("Only"):
-        return "s-OnlyL" if status == statuses(left, right)["only_left"] else "s-OnlyR"
+        return "s-OnlyL" if status == st["only_left"] else "s-OnlyR"
     return "s-" + status.split("-")[0]
 
 
-def emit_html(rows, left, right, counts, out, totals) -> None:
-    title = f"{left.label} vs {right.label} — source package versions"
+def _family(labels) -> str:
+    """The words the compared distros' labels share, e.g. Leap 16.1 + 16.0 -> Leap."""
+    words = [l.split() for l in labels]
+    common = []
+    for parts in zip(*words):
+        if len(set(parts)) != 1:
+            break
+        common.append(parts[0])
+    return " ".join(common) or " / ".join(labels)
+
+
+def emit_html(rows, left, right, extras, vcols, counts, out, totals) -> None:
+    st = statuses(left, right)
+    right_side = _family([right.label] + [d.label for d in extras])
+    title = f"{left.label} vs {right_side} — source package versions"
     sub = (
         f"<strong>{totals['total']:,} source packages</strong> · "
-        f"{html.escape(left.label)} {totals['left']:,} · "
-        f"{html.escape(right.label)} {totals['right']:,} · "
-        f"{totals['both']:,} in both · oss + non-oss · x86_64 + noarch"
+        + " · ".join(
+            f"{html.escape(d.label)} {n:,}"
+            for d, n in zip(
+                (left, right, *extras),
+                (totals["left"], totals["right"], *totals["extras"]),
+            )
+        )
+        + f" · {totals['both']:,} in both {html.escape(left.label)} and "
+        f"{html.escape(right.label)} · oss + non-oss · x86_64 + noarch"
     )
     breakdown = " · ".join(
-        f'<span class="{_status_cls(s, left, right)}">{html.escape(s)}</span> {v:,}'
+        f'<span class="{_status_cls(s, st)}">{html.escape(s)}</span> {v:,}'
         for s, v in counts.items()
     )
     options = "".join(
@@ -724,16 +812,28 @@ def emit_html(rows, left, right, counts, out, totals) -> None:
         {
             "name": r["name"],
             "status": r["status"],
-            "left": r["left"],
-            "right": r["right"],
             "maint": ", ".join(r["maintainers"]),
+            **{key: r[key] for key, _label in vcols},
         }
         for r in rows
     ]
+    # Version columns share what is left after the fixed status/maintainer ones.
+    colgroup = (
+        '<col style="width:8.5rem"><col>'
+        + f'<col style="width:{13 if len(vcols) > 2 else 15}rem">' * len(vcols)
+        + '<col style="width:13rem">'
+    )
+    thead = (
+        '<th data-k="status">Status</th><th data-k="name">Source package</th>'
+        + "".join(
+            f'<th data-k="{key}">{html.escape(label)}</th>' for key, label in vcols
+        )
+        + '<th data-k="maint">Maintainers</th>'
+    )
     sources = "".join(
         f'\n    <li>{html.escape(d.label)} {html.escape(r.name)}: '
         f'<a href="{html.escape(r.url)}">{html.escape(r.url)}</a></li>'
-        for d in (left, right)
+        for d in (left, right, *extras)
         for r in d.repos
     ) + (
         f'\n    <li>Maintainers: <a href="{html.escape(MAINTAINERS_REPO)}">'
@@ -744,13 +844,14 @@ def emit_html(rows, left, right, counts, out, totals) -> None:
         ("__TITLE__", html.escape(title)),
         ("__SUB__", sub),
         ("__BREAKDOWN__", breakdown),
-        ("__LEFT__", html.escape(left.label)),
-        ("__RIGHT__", html.escape(right.label)),
+        ("__COLGROUP__", colgroup),
+        ("__THEAD__", thead),
+        ("__VCOLS__", json.dumps([key for key, _label in vcols])),
         ("__PROJECT__", html.escape(PROJECT_URL)),
         ("__GENERATED__", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
         ("__SOURCES__", sources),
         ("__OPTIONS__", options),
-        ("__ONLY_LEFT__", html.escape(statuses(left, right)["only_left"])),
+        ("__ONLY_LEFT__", html.escape(st["only_left"])),
         ("__DATA__", json.dumps(slim).replace("</", "<\\/").replace("&", "\\u0026").replace("<", "\\u003c")),
     ):
         page = page.replace(needle, value)
@@ -767,6 +868,20 @@ def main(argv=None) -> int:
     )
     p.add_argument("--left", default="tumbleweed", help="reference distro (default: tumbleweed)")
     p.add_argument("--right", default="leap161", help="compared distro (default: leap161)")
+    p.add_argument(
+        "--extra",
+        action="append",
+        default=[],
+        metavar="DISTRO",
+        help="show this distro as an additional version column, right of --right "
+        "(repeatable; takes no part in the status)",
+    )
+    p.add_argument(
+        "--discover",
+        action="store_true",
+        help="probe download.opensuse.org for Leap releases this script does not "
+        "know yet and add each one that is published as an extra column",
+    )
     p.add_argument(
         "--format",
         choices=("table", "md", "csv", "json", "html"),
@@ -812,13 +927,30 @@ def main(argv=None) -> int:
     p.add_argument("-q", "--quiet", action="store_true", help="no summary on stderr")
     args = p.parse_args(argv)
 
-    for key in (args.left, args.right):
+    for key in (args.left, args.right, *args.extra):
         if key not in DISTROS:
             p.error(f"unknown distro {key!r}; known: {', '.join(DISTROS)}")
     if args.left == args.right:
         p.error("--left and --right must differ")
     left, right = DISTROS[args.left], DISTROS[args.right]
+
+    extras, seen = [], {args.left, args.right}
+    for key in args.extra:
+        if key not in seen:
+            seen.add(key)
+            extras.append(DISTROS[key])
+    if args.discover:
+        extras += discover_leaps(args.quiet)
+    # Newest first: an older Leap is the least interesting column, so it ends
+    # up furthest from the versions the diff is actually about.  Sorting on the
+    # numbers rather than the label keeps a 16.10 above 16.9.
+    extras.sort(
+        key=lambda d: tuple(int(n) for n in re.findall(r"\d+", d.label)) or (0,),
+        reverse=True,
+    )
     st = statuses(left, right)
+    vcols = [("left", left.label), ("right", right.label)]
+    vcols += [(f"x{i}", d.label) for i, d in enumerate(extras)]
 
     if not HAVE_RPM and not args.quiet:
         print("note: python3-rpm not found, using built-in rpmvercmp", file=sys.stderr)
@@ -828,7 +960,7 @@ def main(argv=None) -> int:
     maint = {} if args.no_maintainers else fetch_maintainers(args.quiet)
 
     data = {}
-    for distro in (left, right):
+    for distro in (left, right, *extras):
         pkgs: dict = {}
         for repo in distro.repos:
             path = fetch(repo, args.quiet, args.refresh)
@@ -837,7 +969,14 @@ def main(argv=None) -> int:
             parse_archives(path, repo.name, pkgs)
         data[distro.key] = pkgs
 
-    rows = compare(data[left.key], data[right.key], args.with_release, st, maint)
+    rows = compare(
+        data[left.key],
+        data[right.key],
+        [(d, data[d.key]) for d in extras],
+        args.with_release,
+        st,
+        maint,
+    )
 
     counts = {s: 0 for s in st.values()}
     for r in rows:
@@ -850,6 +989,9 @@ def main(argv=None) -> int:
         "left": sum(1 for r in rows if r["left_version"]),
         "right": sum(1 for r in rows if r["right_version"]),
         "both": sum(1 for r in rows if r["left_version"] and r["right_version"]),
+        "extras": [
+            sum(1 for r in rows if r["extras"][i]["version"]) for i in range(len(extras))
+        ],
     }
 
     if args.only:
@@ -866,24 +1008,30 @@ def main(argv=None) -> int:
     out = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
     try:
         if args.format == "table":
-            emit_table(rows, left.label, right.label, out, args.maintainers)
+            emit_table(rows, vcols, out, args.maintainers)
         elif args.format == "md":
-            emit_markdown(rows, left.label, right.label, out, args.maintainers)
+            emit_markdown(rows, vcols, out, args.maintainers)
         elif args.format == "csv":
-            emit_csv(rows, left.label, right.label, out, args.maintainers)
+            emit_csv(rows, vcols, out, args.maintainers)
         elif args.format == "json":
-            emit_json(rows, left, right, counts, out, totals)
+            emit_json(rows, left, right, extras, counts, out, totals)
         elif args.format == "html":
-            emit_html(rows, left, right, counts, out, totals)
+            emit_html(rows, left, right, extras, vcols, counts, out, totals)
     finally:
         if args.output:
             out.close()
 
     if not args.quiet:
+        per_distro = ", ".join(
+            f"{d.label} {n}"
+            for d, n in zip(
+                (left, right, *extras),
+                (totals["left"], totals["right"], *totals["extras"]),
+            )
+        )
         print(
             f"\n{totals['total']} source packages "
-            f"({left.label} {totals['left']}, {right.label} {totals['right']}, "
-            f"{totals['both']} in both): "
+            f"({per_distro}, {totals['both']} in both): "
             + ", ".join(f"{v} {k}" for k, v in counts.items()),
             file=sys.stderr,
         )

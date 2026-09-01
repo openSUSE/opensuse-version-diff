@@ -21,6 +21,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      OSDIFF_COLUMNS: --extra leap160 --discover
     steps:
       - uses: actions/checkout@v4
 
@@ -43,22 +45,29 @@ jobs:
       # No python3-rpm on the runner, so osdiff falls back to its own
       # rpmvercmp; it is verified to agree with rpm's labelCompare.
       # Split per command so a failure names the step that broke.
+      #
+      # --extra leap160 adds the previous Leap as a column; --discover picks up
+      # a 16.2 (…16.9) on the day its repository appears, so the published
+      # table gains the next Leap without a commit here.  Every output must be
+      # built with the same columns, hence the shared OSDIFF_COLUMNS.
       - name: Build index.html (refreshes the indexes)
         run: |
           mkdir -p _site
-          python3 osdiff.py --refresh --format html -o _site/index.html
+          python3 osdiff.py $OSDIFF_COLUMNS --refresh --format html -o _site/index.html
 
       - name: Build diff.json
-        run: python3 osdiff.py --format json -o _site/diff.json --quiet
+        run: python3 osdiff.py $OSDIFF_COLUMNS --format json -o _site/diff.json --quiet
 
       - name: Build diff.csv
-        run: python3 osdiff.py --format csv -o _site/diff.csv --maintainers --quiet
+        run: python3 osdiff.py $OSDIFF_COLUMNS --format csv -o _site/diff.csv --maintainers --quiet
 
       - name: Compress and check the output
         run: |
           gzip -9 -k _site/diff.json
-          # Fail loudly here rather than deploying a page without a table.
+          # Fail loudly here rather than deploying a page without a table,
+          # or one that quietly lost the extra distro columns.
           grep -q 'id="q"' _site/index.html
+          grep -q 'data-k="x0"' _site/index.html
           ls -la _site
 
       - uses: actions/upload-pages-artifact@v3
