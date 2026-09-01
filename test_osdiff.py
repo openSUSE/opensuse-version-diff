@@ -146,6 +146,77 @@ class PerfectionStatus(unittest.TestCase):
         self.assertEqual(got["behind"], "Older-in-Leap")
 
 
+class ResolvePorts(unittest.TestCase):
+    def test_all(self):
+        self.assertEqual(osdiff.resolve_ports("all"), list(osdiff.PORTS_TREES))
+
+    def test_aliases(self):
+        self.assertEqual(osdiff.resolve_ports("s390x,ppc64le"), ["zsystems", "ppc"])
+
+    def test_arm_is_one_download(self):
+        # /ports/armv7hl redirects to the aarch64 tree, so asking for both must
+        # not fetch 151 MB twice.
+        self.assertEqual(osdiff.resolve_ports("armv7hl,armv6hl,aarch64"), ["aarch64"])
+
+    def test_rejects_nonsense(self):
+        with self.assertRaises(SystemExit):
+            osdiff.resolve_ports("sparc")
+
+
+class StreamedParse(unittest.TestCase):
+    """A gzipped index must parse to exactly what the plain one does."""
+
+    ARCHES = ("s390x", "noarch", "boot", "x86_64")
+
+    def _write(self, tmp, gzipped):
+        import gzip as gz
+        import os
+        path = os.path.join(tmp, "ARCHIVES" + (".gz" if gzipped else ""))
+        # Every record gets its own release, so a match lost to a chunk
+        # boundary shows up as a missing version rather than hiding behind an
+        # identical copy.  Interleaved with lines that must not match at all.
+        lines = []
+        for i in range(4000):
+            for arch in self.ARCHES:
+                nvr = f"{arch}pkg-1.0-{i}.1"
+                lines.append(f"./{arch}/{nvr}.{arch}.rpm:"
+                             f"    Source RPM  : {nvr}.src.rpm".encode())
+                lines.append(f"Name        : {nvr}".encode())
+        body = b"\n".join(lines) + b"\n"
+        opener = gz.open if gzipped else open
+        with opener(path, "wb") as fh:
+            fh.write(body)
+        return path
+
+    def test_matches_the_mmap_path(self):
+        import tempfile
+        import unittest.mock
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = osdiff.parse_archives(self._write(tmp, False), "oss", arches=None)
+            # A 4 kB chunk over a ~1.4 MB body puts hundreds of boundaries in
+            # mid-line, which is the only thing this test is really about.
+            with tempfile.TemporaryDirectory() as tmp2, \
+                    unittest.mock.patch.object(osdiff, "_CHUNK", 4096):
+                streamed = osdiff.parse_archives(
+                    self._write(tmp2, True), "oss", arches=None)
+        self.assertEqual({n: sorted(v) for n, v in plain.items()},
+                         {n: sorted(v) for n, v in streamed.items()})
+        self.assertEqual(sum(len(v) for v in streamed.values()), 3 * 4000)
+
+    def test_ports_take_every_arch_but_the_non_arch_dirs(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            pkgs = osdiff.parse_archives(self._write(tmp, True), "oss", arches=None)
+        self.assertEqual(sorted(pkgs), ["noarchpkg", "s390xpkg", "x86_64pkg"])
+        self.assertEqual(pkgs["s390xpkg"]["1.0-0.1"].arches, {"s390x"})
+
+    def test_the_x86_64_tree_stays_narrow(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            pkgs = osdiff.parse_archives(self._write(tmp, True), "oss")
+        self.assertEqual(sorted(pkgs), ["noarchpkg", "x86_64pkg"])
+
+
 class Rpmvercmp(unittest.TestCase):
     """The fallback CI runs on must agree with rpm, where rpm is available."""
 

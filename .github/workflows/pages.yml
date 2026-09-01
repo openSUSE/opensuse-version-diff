@@ -22,7 +22,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      OSDIFF_COLUMNS: --extra leap160 --discover --repology
+      # --ports is a correctness fix, not a nicety: without it ~27 packages
+      # Tumbleweed only builds for aarch64/s390x/… read as Only-in-Leap, which
+      # is simply false, and ~190 arch-specific ones never appear at all.  It
+      # costs ~510 MB more per run once the ports snapshots move; drop the flag
+      # here if that ever becomes a problem for the mirrors.
+      OSDIFF_COLUMNS: --extra leap160 --discover --repology --ports
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +46,9 @@ jobs:
       # the uncompressed copies (several GB) are rebuilt locally instead.
       # The repology cache rides along: it is tiny, and keeping it is what
       # holds that fetch to once a week instead of every morning.
+      # This also covers the ports indexes (~510 MB), which are never expanded:
+      # they are streamed straight out of the gzip, since together they would
+      # be ~9 GB on disk for a single pass.
       - name: Restore cached ARCHIVES indexes
         uses: actions/cache@v4
         with:
@@ -81,6 +89,7 @@ jobs:
           grep -q 'data-k="up"' _site/index.html
           grep -q '"n": {' _site/index.html  # normalized versions still marked
           grep -q 'Perfection' _site/index.html
+          grep -q '"p": "' _site/index.html   # ports lookaside still landing
           ls -la _site
 
       - uses: actions/upload-pages-artifact@v3

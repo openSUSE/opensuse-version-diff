@@ -44,6 +44,24 @@ from datetime import datetime, timezone
 # invent packages that look Leap-only.
 ARCHES = frozenset({"x86_64", "noarch"})
 
+# Tumbleweed's other architectures live under /ports, one tree per port, and
+# they are read as a *lookaside*: consulted only for source packages the
+# x86_64/noarch media do not have.  That is what turns "Leap has s390-tools and
+# Tumbleweed does not" back into the truth, and it surfaces the arch-specific
+# packages (yast2-s390, libica, u-boot, …) that never reach x86_64 at all.
+PORTS_BASE = "https://download.opensuse.org/ports"
+PORTS_TREES = ("aarch64", "riscv", "zsystems", "ppc", "i586")
+# The 32-bit arm ports redirect to the aarch64 tree, so asking for armv7hl is
+# the same download as asking for aarch64, not another 151 MB.  The rest are
+# the names people actually say, mapped to the directory that serves them.
+PORTS_ALIASES = {
+    "arm": "aarch64", "armv6hl": "aarch64", "armv7hl": "aarch64",
+    "s390x": "zsystems", "s390": "zsystems", "riscv64": "riscv",
+    "ppc64": "ppc", "ppc64le": "ppc", "i686": "i586", "x86": "i586",
+}
+# Directories in a ports tree that hold something other than packages.
+NON_ARCH_DIRS = frozenset({"boot", "src", "nosrc", "repodata", "media.1", "EFI"})
+
 # Status values.  Keep the first word greppable and stable: whatever distros are
 # compared, `grep Older` always means "the compared distro is behind".
 def statuses(left: "Distro", right: "Distro", upstream: bool = False) -> dict:
@@ -73,6 +91,7 @@ class Repo:
     name: str  # oss / non-oss
     path: str  # local, uncompressed copy
     url: str
+    keep_gz: bool = False  # ports: read straight from the gzip, never expand it
 
 
 @dataclass
@@ -355,6 +374,8 @@ class Package:
 # ./x86_64/libbz2-1-1.0.8-6.1.x86_64.rpm:    Source RPM  : bzip2-1.0.8-6.1.src.rpm
 SRCRPM_RE = re.compile(rb":    Source RPM  : ([^\n]+)\.src\.rpm\n")
 
+_CHUNK = 64 << 20  # bytes per read when streaming a gzipped index
+
 
 def _request(url: str, method: str = "GET") -> urllib.request.Request:
     """Identify ourselves, so mirror admins can tell what this traffic is."""
@@ -474,6 +495,8 @@ def fetch(repo: Repo, quiet: bool = False, refresh: bool = False) -> str:
 
 
 def _ungzip(repo: Repo, gz: str, quiet: bool) -> str:
+    if repo.keep_gz:
+        return gz
     if os.path.exists(repo.path):
         return repo.path
     if not quiet:
@@ -485,39 +508,129 @@ def _ungzip(repo: Repo, gz: str, quiet: bool) -> str:
     return repo.path
 
 
-def parse_archives(path: str, repo_name: str, pkgs: dict | None = None) -> dict:
-    """Fill/extend a map of source package name -> {version-release: Package}."""
+def _scan(buf, repo_name: str, arches, pkgs: dict) -> None:
+    """Collect every `Source RPM :` line in `buf`, which must start on a line.
+
+    Anchoring the regex on the rare literal and only then walking back to the
+    line start is what keeps this quick: a line-anchored `^\\./…` pattern gives
+    byte-identical results but takes 8.2 s where this takes 0.6 s, because the
+    engine then has to try every one of the millions of lines.
+    """
+    for m in SRCRPM_RE.finditer(buf):
+        # the binary package's arch is the first path component
+        start = buf.rfind(b"\n", max(0, m.start() - 4096), m.start()) + 1
+        line = buf[start : m.start()]
+        if not line.startswith(b"./"):
+            continue
+        sep = line.find(b"/", 2)
+        if sep < 0:
+            continue
+        arch = line[2:sep].decode("ascii", "replace")
+        if arches is None:
+            # A ports tree: take every architecture it ships, since taking
+            # only x86_64 there would leave nothing at all.
+            if arch in NON_ARCH_DIRS:
+                continue
+        elif arch not in arches:
+            continue
+        nvr = m.group(1).decode("utf-8", "replace")
+        try:
+            name, version, release = nvr.rsplit("-", 2)
+        except ValueError:
+            continue
+        versions = pkgs.setdefault(name, {})
+        key = f"{version}-{release}"
+        pkg = versions.get(key)
+        if pkg is None:
+            pkg = versions[key] = Package(name, version, release)
+        pkg.arches.add(arch)
+        pkg.repos.add(repo_name)
+
+
+def parse_archives(path: str, repo_name: str, pkgs: dict | None = None,
+                   arches=ARCHES) -> dict:
+    """Fill/extend a map of source package name -> {version-release: Package}.
+
+    A `.gz` path is streamed rather than expanded: the ports indexes are read
+    once as a lookaside and together they are ~9 GB uncompressed, which is not
+    worth putting on disk for one pass.
+    """
     if pkgs is None:
         pkgs = {}
+    if path.endswith(".gz"):
+        with gzip.open(path, "rb") as fh:
+            tail = b""
+            while True:
+                buf = fh.read(_CHUNK)
+                if not buf:
+                    break
+                # Hand _scan whole lines only, so its walk back to a line start
+                # can never run off the front of the buffer.
+                buf = tail + buf
+                cut = buf.rfind(b"\n") + 1
+                buf, tail = buf[:cut], buf[cut:]
+                _scan(buf, repo_name, arches, pkgs)
+            if tail:
+                _scan(tail, repo_name, arches, pkgs)
+        return pkgs
     with open(path, "rb") as fh:
         mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
         try:
-            for m in SRCRPM_RE.finditer(mm):
-                # the binary package's arch is the first path component
-                start = mm.rfind(b"\n", max(0, m.start() - 4096), m.start()) + 1
-                line = mm[start : m.start()]
-                if not line.startswith(b"./"):
-                    continue
-                sep = line.find(b"/", 2)
-                if sep < 0:
-                    continue
-                arch = line[2:sep].decode("ascii", "replace")
-                if arch not in ARCHES:
-                    continue
-                nvr = m.group(1).decode("utf-8", "replace")
-                try:
-                    name, version, release = nvr.rsplit("-", 2)
-                except ValueError:
-                    continue
-                versions = pkgs.setdefault(name, {})
-                key = f"{version}-{release}"
-                pkg = versions.get(key)
-                if pkg is None:
-                    pkg = versions[key] = Package(name, version, release)
-                pkg.arches.add(arch)
-                pkg.repos.add(repo_name)
+            _scan(mm, repo_name, arches, pkgs)
         finally:
             mm.close()
+    return pkgs
+
+
+def resolve_ports(spec: str) -> list:
+    """Turn `--ports aarch64,s390x` into the list of trees to download."""
+    if spec in ("all", ""):
+        return list(PORTS_TREES)
+    trees = []
+    for want in spec.split(","):
+        want = want.strip().lower()
+        tree = PORTS_ALIASES.get(want, want)
+        if tree not in PORTS_TREES:
+            raise SystemExit(
+                f"unknown ports tree {want!r}; known: "
+                + ", ".join(sorted(set(PORTS_TREES) | set(PORTS_ALIASES))))
+        if tree not in trees:  # armv7hl and aarch64 are one download
+            trees.append(tree)
+    return trees
+
+
+def fetch_ports(trees: list, quiet: bool = False, refresh: bool = False) -> dict:
+    """Source packages from Tumbleweed's non-x86_64 media.
+
+    The result is a lookaside, not another distro: the caller merges only the
+    names the x86_64/noarch tree does not already have.
+    """
+    pkgs = {}
+    for tree in trees:
+        for name in ("oss", "non-oss"):
+            url = f"{PORTS_BASE}/{tree}/tumbleweed/repo/{name}/ARCHIVES.gz"
+            path = f"ARCHIVES_ports_{tree}"
+            if name != "oss":
+                path += "_nonoss"
+            repo = Repo(name, path, url, keep_gz=True)
+            gz = path + ".gz"
+            if not os.path.exists(gz) and not _exists(url):
+                # riscv publishes no non-oss at all; a port may drop one too.
+                if not quiet:
+                    print(f"no ports/{tree} {name} repository", file=sys.stderr)
+                continue
+            try:
+                local = fetch(repo, quiet, refresh)
+            except (urllib.error.URLError, OSError) as err:
+                # One unreachable port must not cost the whole lookaside.
+                print(f"warning: skipping ports/{tree} {name} ({err})",
+                      file=sys.stderr)
+                continue
+            before = len(pkgs)
+            parse_archives(local, f"ports/{tree} {name}", pkgs, arches=None)
+            if not quiet:
+                print(f"ports/{tree} {name}: {len(pkgs) - before} more source "
+                      f"packages ({len(pkgs)} total)", file=sys.stderr)
     return pkgs
 
 
@@ -704,6 +817,11 @@ def compare(left: dict, right: dict, extras: list, with_release: bool,
             "right_repos": sorted(rp.repos) if rp else [],
             "maintainers": maint.get(name, []),
         }
+        # A name the x86_64/noarch media do not carry at all, found only in a
+        # ports tree.  Worth flagging: "Tumbleweed has it" then means something
+        # narrower than usual, and for an s390x or riscv tool that is the point.
+        if lp and all(r.startswith("ports/") for r in lp.repos):
+            row["ports"] = sorted(lp.arches)
         if upstream is not None:
             row["up"] = up or (lp.version if lp else "")
         # x0, x1, … are the flat columns the text formats and the page print;
@@ -912,6 +1030,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
          text-overflow: ellipsis; }
   td.v.norm, .norm-eg { text-decoration: underline dotted var(--muted);
                         text-underline-offset: .25em; }
+  sup.ports { font-family: system-ui, sans-serif; font-size: .6rem; color: var(--muted);
+              border: 1px solid var(--line); border-radius: .5rem; padding: 0 .3em;
+              vertical-align: .35em; }
   td.m { color: var(--muted); font-size: .85em; max-width: 18rem; overflow: hidden;
          text-overflow: ellipsis; white-space: nowrap; }
   .status { font-weight: 600; white-space: nowrap; }
@@ -953,7 +1074,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
      the rpm release. Maintainers are known for PackageHub packages only.
      A <span class="norm-eg">dotted version</span> was rewritten before
      comparing — a CPAN decimal, a missing <code>~</code> before a pre-release
-     or a stray <code>v</code>; hover it to see what it was compared as.</p>
+     or a stray <code>v</code>; hover it to see what it was compared as.
+     __PORTSNOTE__</p>
   <p>Data:</p>
   <ul>__SOURCES__
     <li>Downloads: <a href="diff.json">diff.json</a> ·
@@ -998,7 +1120,13 @@ function render() {
       // quietly showing one version and comparing another.
       const n = r.n && r.n[k];
       const t = n ? `${r[k]} — compared as ${n}` : r[k];
-      return `<td class="v${n ? ' norm' : ''}" title="${esc(t)}">${esc(r[k]) || '—'}</td>`;
+      // r.p names the architectures a ports-only package is built for; the
+      // arch list goes in the tooltip so the column keeps its width.
+      const p = k === 'left' && r.p
+        ? ` <sup class="ports" title="not on x86_64/noarch; built for ${esc(r.p)}"` +
+          `>ports</sup>` : '';
+      return `<td class="v${n ? ' norm' : ''}" title="${esc(t)}"` +
+             `>${esc(r[k]) || '—'}${p}</td>`;
     }).join('') +
     `<td class="m" title="${esc(r.maint)}">${esc(r.maint) || '—'}</td></tr>`).join('');
 }
@@ -1047,6 +1175,10 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals, st) -> None
         + f" · {totals['both']:,} in both {html.escape(left.label)} and "
         f"{html.escape(right.label)} · oss + non-oss · x86_64 + noarch"
     )
+    if "ports" in totals:
+        sub += (
+            f" · {totals['ports']:,} only in {html.escape(left.label)} ports"
+        )
     if "upstream_outdated" in totals:
         sub += (
             f" · {totals['upstream_outdated']:,} behind upstream in "
@@ -1085,6 +1217,7 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals, st) -> None
             # `n` only rides along where it exists — 1k of 17.5k rows.
             **({"n": {k: v for k, v in r["normalized"].items() if k != "rules"}}
                if r.get("normalized") else {}),
+            **({"p": ", ".join(r["ports"])} if r.get("ports") else {}),
         }
         for r in rows
     ]
@@ -1134,6 +1267,11 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals, st) -> None
         ("__SOURCES__", sources),
         ("__OPTIONS__", options),
         ("__ONLY_LEFT__", html.escape(st["only_left"])),
+        ("__PORTSNOTE__",
+         f'A <sup class="ports">ports</sup> badge means {html.escape(left.label)} '
+         "only builds that package for another architecture, so it is absent "
+         "from the x86_64/noarch media the rest of the table is built from."
+         if "ports" in totals else ""),
         ("__HINTS__", json.dumps(hints).replace("<", "\\u003c")),
         ("__DATA__", json.dumps(slim).replace("</", "<\\/").replace("&", "\\u0026").replace("<", "\\u003c")),
     ):
@@ -1221,6 +1359,16 @@ def main(argv=None) -> int:
         help="check upstream for newer ARCHIVES indexes (HEAD request first, "
         "so unchanged files are not re-downloaded)",
     )
+    p.add_argument(
+        "--ports",
+        nargs="?",
+        const="all",
+        metavar="TREES",
+        help="also look up packages missing from the reference distro's "
+        "x86_64/noarch media in its ports trees (default: all of "
+        + ",".join(PORTS_TREES) + "; or a comma-separated subset, e.g. "
+        "--ports s390x,aarch64).  Costs ~510 MB of downloads",
+    )
     p.add_argument("-q", "--quiet", action="store_true", help="no summary on stderr")
     args = p.parse_args(argv)
 
@@ -1230,6 +1378,15 @@ def main(argv=None) -> int:
     if args.left == args.right:
         p.error("--left and --right must differ")
     left, right = DISTROS[args.left], DISTROS[args.right]
+    ports_trees = []
+    if args.ports:
+        # PORTS_BASE hardcodes Tumbleweed's layout; Leap's ports live elsewhere
+        # and are deliberately not read (see the README).
+        if args.left != "tumbleweed":
+            p.error("--ports only applies to a Tumbleweed --left")
+        # Resolved here rather than at use, so a typo fails now and not after
+        # four indexes have been parsed.
+        ports_trees = resolve_ports(args.ports)
 
     extras, seen = [], {args.left, args.right}
     for key in args.extra:
@@ -1280,6 +1437,21 @@ def main(argv=None) -> int:
             parse_archives(path, repo.name, pkgs)
         data[distro.key] = pkgs
 
+    if args.ports:
+        # Strictly a lookaside for the reference distro: a name the x86_64 media
+        # already have keeps the version they ship, so nothing that is on the
+        # page today can be moved by a port.  What it adds is the two kinds of
+        # package the x86_64 view gets wrong — the arch-specific ones (yast2-s390,
+        # u-boot, …) that never appear as Only-in-Tumbleweed rows at all, and the
+        # ones that read as Only-in-Leap purely because Leap builds them on an
+        # architecture we were not looking at.
+        ports = fetch_ports(ports_trees, args.quiet, args.refresh)
+        added = {n: v for n, v in ports.items() if n not in data[left.key]}
+        data[left.key].update(added)
+        if not args.quiet:
+            print(f"ports lookaside: {len(added)} source packages "
+                  f"{left.label} has nowhere else", file=sys.stderr)
+
     rows = compare(
         data[left.key],
         data[right.key],
@@ -1305,6 +1477,8 @@ def main(argv=None) -> int:
             sum(1 for r in rows if r["extras"][i]["version"]) for i in range(len(extras))
         ],
     }
+    if args.ports:
+        totals["ports"] = sum(1 for r in rows if r.get("ports"))
     if upstream is not None:
         totals["upstream_outdated"] = sum(
             1 for r in rows
@@ -1351,6 +1525,8 @@ def main(argv=None) -> int:
             if "upstream_outdated" in totals
             else ""
         )
+        if "ports" in totals:
+            behind = f", {totals['ports']} only in ports" + behind
         print(
             f"\n{totals['total']} source packages "
             f"({per_distro}, {totals['both']} in both{behind}): "

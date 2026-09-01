@@ -60,6 +60,50 @@ Maintainers are only known for the ~5.3k packages Leap gets from PackageHub;
 the core packages inherited from SLES/Factory (release `160099.*`) and the
 non-oss packages are not listed there and show up empty.
 
+### Ports: the other architectures (`--ports`)
+
+Only `x86_64` and `noarch` are read, because a package built for one Leap
+architecture and not another is a build failure rather than a version
+difference. Tumbleweed, though, keeps its non-x86_64 media in a separate tree
+per port, and reading only x86_64 there gets two things wrong: a package
+Tumbleweed *only* builds for aarch64 or s390x looks like it does not exist, and
+if Leap ships it too the row reads `Only-in-Leap`, which is simply false.
+
+`--ports` adds those trees as a **lookaside** — consulted only for names the
+x86_64/noarch media do not have, so no version already on the page can be
+changed by a port:
+
+| Tree | URL | Serves |
+| --- | --- | --- |
+| `aarch64` | `https://download.opensuse.org/ports/aarch64/tumbleweed/repo/{oss,non-oss}/ARCHIVES.gz` | `aarch64`, `armv6hl`, `armv7hl` |
+| `zsystems` | …`/ports/zsystems/`… | `s390x` |
+| `ppc` | …`/ports/ppc/`… | `ppc64`, `ppc64le` |
+| `riscv` | …`/ports/riscv/`… (no non-oss) | `riscv64` |
+| `i586` | …`/ports/i586/`… | `i586`, `i686` |
+
+Those five are the whole set: `/ports/armv6hl` and `/ports/armv7hl` redirect to
+the aarch64 tree, so `--ports armv7hl,aarch64` is one download, not two. Any of
+the architecture names in the right-hand column works as a shorthand, e.g.
+`--ports s390x,ppc64le`; bare `--ports` takes all five.
+
+It costs ~510 MB of downloads. Those indexes are ~9 GB uncompressed together,
+so unlike the x86_64 ones they are streamed straight out of the gzip and never
+expanded on disk; a full run takes about 15 seconds longer.
+
+As of 2026-09-01 this adds **214 source packages** Tumbleweed has nowhere else:
+187 new `Only-in-Tumbleweed` rows — the arch-specific packages (`yast2-s390`,
+`libica`, `qclib`, `openssl-ibmca`, `u-boot-*`, the `cross-x86_64-gcc*` set) —
+and 27 rows that stop lying: `arm-trusted-firmware-*` and friends move from
+`Only-in-Leap` to `Older-in-Leap` (Leap on 2.10.14, Tumbleweed's aarch64 tree on
+2.12.8) or to `Same`. On the page such a row carries a small `ports` badge next
+to the Tumbleweed version, with the architectures in its tooltip; the JSON
+export puts them in `ports`, and `left_repos` names the tree
+(`ports/zsystems oss`).
+
+Leap's own ports are deliberately *not* read — the lookaside exists to stop the
+reference distro from looking emptier than it is, and doing the same for Leap
+would invent `Only-in-Leap` rows instead of removing them.
+
 ## Status column
 
 Every row carries one greppable status. The first word is always the same, so
@@ -116,8 +160,10 @@ per row, and the run prints a per-rule tally on stderr.
 | `pre-release` | a pre-release marker glued on without the `~` that tells rpm it sorts *below* the release | `resource-agents` 4.18.0rc1 read as newer than 4.18.0 |
 | `v-prefix` | a stray `v`, which rpm reads as an alpha segment — and alpha always loses to numeric | `dysk` v3.6.1 read as older than 2.9.1 |
 
-That is 1011 of 17.5k rows, and it moves 128 verdicts: 121 `Older-in-Leap` and
-7 `Newer-in-Leap` rows were neither.
+That is 1012 of 17.7k rows, and it moves 128 verdicts: 115 rows that read
+`Older-in-Leap` are in fact level and current (`Perfection`), and 13 of the 26
+that read `Newer-in-Leap` were nothing of the kind — 7 are behind, 6 are level.
+Nothing moves the other way.
 
 Each rule is deliberately narrow, since one that fires where it should not
 invents a difference nobody can explain. `pre-release` only matches between a
@@ -213,6 +259,8 @@ neither needs the diff to change shape.
 --discover              probe for Leap releases not known yet and add them too
 --repology              add an Upstream column from repology.org
 --repology-max-age N    refetch that cache when older than N days (default 7)
+--ports [TREES]         look up packages missing from the reference distro's
+                        x86_64/noarch media in its ports trees (default: all)
 --format FMT            table (default), md, csv, json, html
 --only STATUS           filter by status substring, e.g. --only older (repeatable)
 --grep REGEX            filter source package names
@@ -237,24 +285,29 @@ neither needs the diff to change shape.
 # Python stack, as markdown for a report
 ./osdiff.py --only older --grep '^python-' --format md -o python.md
 
+# Include what Tumbleweed only builds for s390x and aarch64, rather than
+# reporting it as missing
+./osdiff.py --ports s390x,aarch64
+
 # Full dataset for further processing
 ./osdiff.py --format json -o diff.json
 ```
 
 ## Current numbers (Tumbleweed vs Leap 16.1, oss + non-oss, x86_64 + noarch)
 
-Run with `--extra leap160 --repology`: 17532 source packages in total — 17143
-in Tumbleweed, 10574 in Leap 16.1 and 10551 in Leap 16.0, of which 10264 exist
-in both compared distros, and 3610 are behind upstream in Tumbleweed:
+Run with `--extra leap160 --repology --ports`: 17719 source packages in total —
+17357 in Tumbleweed (214 of them only in a ports tree), 10574 in Leap 16.1 and
+10551 in Leap 16.0, of which 10291 exist in both compared distros, and 3610 are
+behind upstream in Tumbleweed:
 
-| Status | Count |
-| --- | --- |
-| Perfection | 4290 |
-| Older-in-Leap | 4919 |
-| Newer-in-Leap | 13 |
-| Same | 1042 |
-| Only-in-TW | 6879 |
-| Only-in-Leap | 389 |
+| Status | Count | Without `--ports` |
+| --- | --- | --- |
+| Perfection | 4297 | 4290 |
+| Older-in-Leap | 4939 | 4919 |
+| Newer-in-Leap | 13 | 13 |
+| Same | 1042 | 1042 |
+| Only-in-TW | 7066 | 6879 |
+| Only-in-Leap | 362 | 389 |
 
 The JSON export carries the same figures under `totals` and `summary`.
 
@@ -278,7 +331,9 @@ The deployed site contains:
 
 The ARCHIVES indexes are never committed — `.gitignore` keeps them out. CI
 caches the compressed ones between runs and passes `--refresh`, so a scheduled
-rebuild normally costs six HEAD requests for the indexes plus eight for
+rebuild normally costs fifteen HEAD requests for the indexes plus eight for
 `--discover`, and downloads only what changed upstream. A cold cache pulls
-~360 MB. The Repology cache rides along in the same cache entry, which is what
-keeps that fetch weekly rather than nightly.
+~870 MB, ~510 MB of which is the nine ports indexes; those are the part that
+actually moves most days, so drop `--ports` from `OSDIFF_COLUMNS` if that
+traffic ever becomes a problem. The Repology cache rides along in the same cache
+entry, which is what keeps that fetch weekly rather than nightly.
