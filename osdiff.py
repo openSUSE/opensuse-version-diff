@@ -1055,6 +1055,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .s-OnlyL { color: var(--only-l); }
   .s-OnlyR { color: var(--only-r); }
   #count { color: var(--muted); margin: .75rem 0; }
+  /* The statuses are the whole point of the table, and a hover tooltip is not
+     discoverable — you have to already suspect there is something to read.
+     Closed by default so it costs one line until somebody wants it. */
+  details.legend { margin: 0 0 1.25rem; }
+  details.legend summary { cursor: pointer; color: var(--muted); width: max-content; }
+  details.legend summary:hover { color: var(--plum-purple); }
+  details.legend summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  details.legend dl { display: grid; grid-template-columns: max-content 1fr;
+                      gap: .35rem 1.25rem; margin: .6rem 0 0; padding: .8rem 1rem;
+                      background: var(--surface); border: 1px solid var(--line);
+                      border-radius: 6px; }
+  details.legend dt { white-space: nowrap; }
+  details.legend dd { margin: 0; color: var(--muted); }
+  @media (max-width: 44rem) {
+    details.legend dl { grid-template-columns: 1fr; gap: .15rem; }
+    details.legend dd { margin-bottom: .6rem; }
+  }
 </style>
 </head>
 <body>
@@ -1066,6 +1083,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </header>
 <p class="sub">__SUB__</p>
 <p class="sub breakdown">__BREAKDOWN__</p>
+<details class="legend">
+  <summary>What do the statuses mean?</summary>
+  <dl>__LEGEND__</dl>
+</details>
 <div class="bar">
   <input id="q" type="search" placeholder="Filter by package or maintainer…" autofocus>
   <select id="st"><option value="">All statuses</option>__OPTIONS__</select>
@@ -1192,21 +1213,46 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals, st) -> None
             f" · {totals['upstream_outdated']:,} behind upstream in "
             f"{html.escape(left.label)}"
         )
+    # One sentence per status, written once and used three times over: as the
+    # legend below the counts, as the tooltip on each count, and as the tooltip
+    # on every status cell in the table.  Full sentences, because the legend
+    # reads them as prose — a tooltip can get away with a fragment, a legend
+    # cannot.
     hints = {
-        st["same"]: f"Same upstream version in {left.label} and {right.label}",
-        st["older"]: f"{right.label} is behind {left.label}",
-        st["newer"]: (
-            f"{right.label} is ahead of {left.label} — not an error, but worth "
-            f"checking whether the change reached {left.label} first"
-            + (" (Factory first)" if left.key == "tumbleweed" else "")
+        st["same"]: (
+            f"{left.label} and {right.label} ship the same upstream version. "
+            "Only the version is compared, so the rpm release may still differ."
         ),
-        st["only_left"]: f"Not in {right.label}",
-        st["only_right"]: f"Not in {left.label}",
+        st["older"]: (
+            f"{right.label} ships an older upstream version than {left.label}. "
+            "This is the ordinary case for a package that moved on after "
+            f"{right.label} branched, and the list worth working through."
+        ),
+        st["newer"]: (
+            f"{right.label} ships a newer upstream version than {left.label}, "
+            "which is not supposed to happen"
+            + (" — changes are expected to reach Factory first"
+               if left.key == "tumbleweed" else "")
+            + ". Usually a package updated straight in "
+            f"{right.label}, or one whose version scheme confuses the "
+            "comparison; either way it is worth a look."
+        ),
+        st["only_left"]: (
+            f"{left.label} ships this source package and {right.label} does not."
+        ),
+        st["only_right"]: (
+            f"{right.label} ships this source package and {left.label} does not."
+            # A row can land here on the strength of an extra column alone, so
+            # promising that `right` has it would be a lie for those rows.
+            + (" Some of these are shipped only by an older release in the "
+               "columns further right." if extras else "")
+        ),
     }
     if "perfect" in st:
         hints[st["perfect"]] = (
-            f"{left.label} and {right.label} are level and Repology knows "
-            "nothing newer anywhere — as current as a package gets"
+            f"Marked ✦. {left.label} and {right.label} are level with each "
+            "other, and Repology knows of no distribution anywhere shipping "
+            "anything newer — as up to date as a package gets."
         )
     breakdown = " · ".join(
         f'<span class="{_status_cls(s, st)}" title="{html.escape(hints[s])}">'
@@ -1215,6 +1261,13 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals, st) -> None
     )
     options = "".join(
         f'<option value="{html.escape(s)}">{html.escape(s)}</option>' for s in counts
+    )
+    # Same order and same colours as the breakdown line above it, so the legend
+    # reads as an expansion of the counts rather than a second list of statuses.
+    legend = "".join(
+        f'<dt class="status {_status_cls(s, st)}">{html.escape(s)}</dt>'
+        f"<dd>{html.escape(hints[s])}</dd>"
+        for s in counts
     )
     slim = [
         {
@@ -1267,6 +1320,7 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals, st) -> None
         ("__TITLE__", html.escape(title)),
         ("__SUB__", sub),
         ("__BREAKDOWN__", breakdown),
+        ("__LEGEND__", legend),
         ("__COLGROUP__", colgroup),
         ("__THEAD__", thead),
         ("__VCOLS__", json.dumps([key for key, _label in vcols])),

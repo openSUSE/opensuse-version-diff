@@ -8,6 +8,9 @@ more importantly — that they stay out of the way everywhere else.
     python3 -m unittest -v test_osdiff
 """
 
+import html
+import json
+import re
 import unittest
 
 import osdiff
@@ -144,6 +147,58 @@ class PerfectionStatus(unittest.TestCase):
         # entry of its own.
         got = self.rows({})
         self.assertEqual(got["behind"], "Older-in-Leap")
+
+
+class StatusLegend(unittest.TestCase):
+    """Every status the run can produce must be explained on the page."""
+
+    TW = osdiff.Distro("tumbleweed", "Tumbleweed", "TW", [])
+    LEAP = osdiff.Distro("leap161", "Leap 16.1", "Leap", [])
+    OLD = osdiff.Distro("leap160", "Leap 16.0", "Leap160", [])
+
+    def page(self, extras=(), upstream=True):
+        import io
+        st = osdiff.statuses(self.TW, self.LEAP, upstream)
+        counts = {s: 1 for s in st.values()}
+        vcols = [("left", "Tumbleweed"), ("right", "Leap 16.1")]
+        totals = {"total": 1, "left": 1, "right": 1, "both": 1,
+                  "extras": [1] * len(extras)}
+        out = io.StringIO()
+        osdiff.emit_html([], self.TW, self.LEAP, list(extras), vcols, counts,
+                         out, totals, st)
+        return out.getvalue(), st
+
+    def test_every_status_has_a_legend_entry(self):
+        page, st = self.page()
+        legend = re.search(r'<details class="legend">.*?</details>', page, re.S)
+        self.assertIsNotNone(legend, "no legend on the page")
+        for status in st.values():
+            self.assertIn(f">{status}</dt>", legend.group(0))
+
+    def test_legend_and_tooltip_say_the_same_thing(self):
+        # One wording, three places.  If these ever drift, the table is
+        # explaining itself two different ways depending on where you look.
+        page, st = self.page()
+        hints = json.loads(re.search(r"const HINTS = (\{.*?\});", page).group(1))
+        self.assertEqual(sorted(hints), sorted(st.values()))
+        legend = re.search(r"<dl>(.*?)</dl>", page, re.S).group(1)
+        for status, text in hints.items():
+            self.assertIn(html.escape(text), legend, status)
+
+    def test_only_in_right_admits_the_extra_columns(self):
+        # A row can be Only-in-Leap on the strength of Leap 16.0 alone, so the
+        # explanation must not promise that Leap 16.1 ships it.
+        with_extra, st = self.page(extras=[self.OLD])
+        without, _ = self.page()
+        hint = lambda p: json.loads(  # noqa: E731
+            re.search(r"const HINTS = (\{.*?\});", p).group(1))[st["only_right"]]
+        self.assertIn("older release", hint(with_extra))
+        self.assertNotIn("older release", hint(without))
+
+    def test_perfection_names_its_mark(self):
+        page, st = self.page()
+        hints = json.loads(re.search(r"const HINTS = (\{.*?\});", page).group(1))
+        self.assertIn("✦", hints[st["perfect"]])
 
 
 class ResolvePorts(unittest.TestCase):
