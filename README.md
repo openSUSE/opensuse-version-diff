@@ -1,6 +1,14 @@
 # 🦎 osdiff: openSUSE source package version diff
 
-### ➜ 🌐 **[View the live version diff](https://opensuse.github.io/opensuse-version-diff/)**
+<!-- Badges -->
+
+[![Powered by openSUSE](https://img.shields.io/badge/powered%20by-openSUSE-6da741?logo=opensuse&logoColor=white)](https://www.opensuse.org/)
+[![Live version diff](https://img.shields.io/badge/live-version%20diff-6da741?logo=githubpages&logoColor=white)](https://opensuse.github.io/opensuse-version-diff/)
+[![Build and publish](https://github.com/openSUSE/opensuse-version-diff/actions/workflows/pages.yml/badge.svg)](https://github.com/openSUSE/opensuse-version-diff/actions/workflows/pages.yml)
+![Python 3](https://img.shields.io/badge/python-3-3776ab?logo=python&logoColor=white)
+![Dependencies: none](https://img.shields.io/badge/dependencies-none-6da741)
+![Last commit](https://img.shields.io/github/last-commit/openSUSE/opensuse-version-diff)
+![Contributors](https://img.shields.io/github/contributors/openSUSE/opensuse-version-diff)
 
 <p align="center">
   <img src="assets/shot.png" alt="osdiff HTML view" width="900">
@@ -160,7 +168,7 @@ per row, and the run prints a per-rule tally on stderr.
 
 | Rule | Problem | Example |
 | --- | --- | --- |
-| `cpan-decimal` | CPAN's two notations for one release. perl reads the fraction in groups of three, so `1.111017` *is* `1.111.17`, and the two sort differently under rpm rules | `perl-CPAN-Mini` 1.111017 vs 1.111.17 → same |
+| `cpan-decimal` | CPAN's two notations for one release. perl reads the fraction in groups of three, so `1.111017` *is* `1.111.17`, and the two sort differently under rpm rules | `perl-CPAN-Mini` 1.111017 and 1.111.17, compared as the same version |
 | `pre-release` | a pre-release marker glued on without the `~` that tells rpm it sorts *below* the release | `resource-agents` 4.18.0rc1 read as newer than 4.18.0 |
 | `v-prefix` | a stray `v`, which rpm reads as an alpha segment, and alpha always loses to numeric | `dysk` v3.6.1 read as older than 2.9.1 |
 
@@ -323,15 +331,18 @@ no secrets and no dependencies. The runner has no `python3-rpm`, so osdiff uses
 its built-in `rpmvercmp`, which is verified to agree with rpm's `labelCompare`
 on every package in the current data set.
 
-One-time setup after pushing: **Settings → Pages → Source: GitHub Actions**.
+One-time setup after pushing: in the repository's **Settings**, open **Pages**
+and set **Source** to **GitHub Actions**. Nothing else is needed; the workflow
+builds the page and uploads it itself, so there is no `gh-pages` branch and no
+generated file in git.
 
 The deployed site contains:
 
 | Path | What |
 | --- | --- |
-| `index.html` | the interactive table (self-contained, ~2 MB) |
-| `diff.json` / `diff.json.gz` | full data set including per-package repos and arches |
-| `diff.csv` | flat table with maintainers |
+| [`index.html`](https://opensuse.github.io/opensuse-version-diff/) | the interactive table (self-contained, ~2 MB) |
+| [`diff.json`](https://opensuse.github.io/opensuse-version-diff/diff.json) / [`diff.json.gz`](https://opensuse.github.io/opensuse-version-diff/diff.json.gz) | full data set including per-package repos and arches |
+| [`diff.csv`](https://opensuse.github.io/opensuse-version-diff/diff.csv) | flat table with maintainers |
 
 The ARCHIVES indexes are never committed, since `.gitignore` keeps them out. CI
 caches the compressed ones between runs and passes `--refresh`, so a scheduled
@@ -341,3 +352,15 @@ rebuild normally costs fifteen HEAD requests for the indexes plus eight for
 actually moves most days, so drop `--ports` from `OSDIFF_COLUMNS` if that
 traffic ever becomes a problem. The Repology cache rides along in the same cache
 entry, which is what keeps that fetch weekly rather than nightly.
+
+## 🔗 Links
+
+| Where | What |
+| --- | --- |
+| 🌐 [Live version diff](https://opensuse.github.io/opensuse-version-diff/) | the interactive table, rebuilt every morning |
+| 📦 [diff.json](https://opensuse.github.io/opensuse-version-diff/diff.json) | the full data set, per-package repos and arches included |
+| 📄 [diff.csv](https://opensuse.github.io/opensuse-version-diff/diff.csv) | the flat table, with maintainers |
+| 🚦 [Workflow runs](https://github.com/openSUSE/opensuse-version-diff/actions/workflows/pages.yml) | what the last rebuild did, and its logs |
+| 🐛 [Issues](https://github.com/openSUSE/opensuse-version-diff/issues) | a wrong version, a missing package, an idea |
+| 🔭 [Repology](https://repology.org/repository/opensuse_tumbleweed) | where the Upstream column comes from |
+| 🦎 [PackageHub](https://src.opensuse.org/products/PackageHub) | where the maintainer names come from |
