@@ -182,10 +182,10 @@ invents a difference nobody can explain. `pre-release` only matches between a
 digit and a boundary, so it cannot hit a git hash or a longer word;
 `cpan-decimal` is scoped to `perl-*`, because two-component versions are
 ordinary elsewhere: `lua53-cliargs` 3.02 is 3.02, not perl's 3.20.0.
-`test_osdiff.py` pins all of this down both ways:
+`tests/test_osdiff.py` pins all of this down both ways:
 
 ```sh
-python3 -m unittest -v test_osdiff
+python3 -m unittest discover -v -s tests
 ```
 
 The 13 remaining `Newer-in-Leap` rows are genuine: Leap really does ship a
