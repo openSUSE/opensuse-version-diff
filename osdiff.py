@@ -372,7 +372,15 @@ class Package:
 
 
 # ./x86_64/libbz2-1-1.0.8-6.1.x86_64.rpm:    Source RPM  : bzip2-1.0.8-6.1.src.rpm
-SRCRPM_RE = re.compile(rb":    Source RPM  : ([^\n]+)\.src\.rpm\n")
+#
+# `nosrc` counts too.  A spec whose sources are not redistributable — or simply
+# too big to publish twice — is built as a *no-source* rpm, and rpm records that
+# in the same field with a different suffix.  Reading only `.src.rpm` silently
+# dropped chromium, bun, every rust bootstrap and every kernel flavour: not a
+# handful of oddities but some of the most-watched packages in the distribution,
+# and worse than absent, because a package that is nosrc on one side and src on
+# the other (Leap 16.0's chromium is) then reads as a real difference.
+SRCRPM_RE = re.compile(rb":    Source RPM  : ([^\n]+)\.(?:no)?src\.rpm\n")
 
 _CHUNK = 64 << 20  # bytes per read when streaming a gzipped index
 

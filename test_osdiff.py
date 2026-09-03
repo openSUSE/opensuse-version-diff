@@ -217,6 +217,30 @@ class StreamedParse(unittest.TestCase):
         self.assertEqual(sorted(pkgs), ["noarchpkg", "x86_64pkg"])
 
 
+class NoSourceRpms(unittest.TestCase):
+    """chromium, bun, the rust bootstraps and every kernel are `nosrc`."""
+
+    BODY = (b"./x86_64/chromium-152.0.7977.64-1.1.x86_64.rpm:"
+            b"    Source RPM  : chromium-152.0.7977.64-1.1.nosrc.rpm\n"
+            b"./x86_64/bzip2-1.0.8-6.1.x86_64.rpm:"
+            b"    Source RPM  : bzip2-1.0.8-6.1.src.rpm\n")
+
+    def _parse(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ARCHIVES")
+            with open(path, "wb") as fh:
+                fh.write(self.BODY)
+            return osdiff.parse_archives(path, "oss")
+
+    def test_nosrc_packages_are_not_dropped(self):
+        pkgs = self._parse()
+        self.assertEqual(sorted(pkgs), ["bzip2", "chromium"])
+        # The suffix must not leak into the version the table prints.
+        self.assertEqual(sorted(pkgs["chromium"]), ["152.0.7977.64-1.1"])
+
+
 class Rpmvercmp(unittest.TestCase):
     """The fallback CI runs on must agree with rpm, where rpm is available."""
 
