@@ -39,7 +39,7 @@ jobs:
       # level, so they gate the build rather than the data being rebuilt on top
       # of a broken one.  Cheap: no network, no indexes needed.
       - name: Test the version normalization
-        run: python3 -m unittest -v test_osdiff
+        run: python3 -m unittest discover -v -s tests
 
       # Keep the compressed indexes between runs so --refresh only has to issue
       # a HEAD request per repository.  Unchanged files cost no mirror traffic;
