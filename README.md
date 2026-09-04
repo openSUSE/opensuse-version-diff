@@ -3,12 +3,12 @@
 <!-- Badges -->
 
 [![Powered by openSUSE](https://img.shields.io/badge/powered%20by-openSUSE-6da741?logo=opensuse&logoColor=white)](https://www.opensuse.org/)
-[![Live version diff](https://img.shields.io/badge/live-version%20diff-6da741?logo=githubpages&logoColor=white)](https://opensuse.github.io/opensuse-version-diff/)
-[![Build and publish](https://github.com/openSUSE/opensuse-version-diff/actions/workflows/pages.yml/badge.svg)](https://github.com/openSUSE/opensuse-version-diff/actions/workflows/pages.yml)
+[![Live version diff](https://img.shields.io/badge/live-version%20diff-6da741?logo=githubpages&logoColor=white)](https://opensuse.github.io/osdiff/)
+[![Build and publish](https://github.com/openSUSE/osdiff/actions/workflows/pages.yml/badge.svg)](https://github.com/openSUSE/osdiff/actions/workflows/pages.yml)
 ![Python 3](https://img.shields.io/badge/python-3-3776ab?logo=python&logoColor=white)
 ![Dependencies: none](https://img.shields.io/badge/dependencies-none-6da741)
-![Last commit](https://img.shields.io/github/last-commit/openSUSE/opensuse-version-diff)
-![Contributors](https://img.shields.io/github/contributors/openSUSE/opensuse-version-diff)
+![Last commit](https://img.shields.io/github/last-commit/openSUSE/osdiff)
+![Contributors](https://img.shields.io/github/contributors/openSUSE/osdiff)
 
 <p align="center">
   <img src="assets/shot.png" alt="osdiff HTML view" width="900">
@@ -340,9 +340,9 @@ The deployed site contains:
 
 | Path | What |
 | --- | --- |
-| [`index.html`](https://opensuse.github.io/opensuse-version-diff/) | the interactive table (self-contained, ~2 MB) |
-| [`diff.json`](https://opensuse.github.io/opensuse-version-diff/diff.json) / [`diff.json.gz`](https://opensuse.github.io/opensuse-version-diff/diff.json.gz) | full data set including per-package repos and arches |
-| [`diff.csv`](https://opensuse.github.io/opensuse-version-diff/diff.csv) | flat table with maintainers |
+| [`index.html`](https://opensuse.github.io/osdiff/) | the interactive table (self-contained, ~2 MB) |
+| [`diff.json`](https://opensuse.github.io/osdiff/diff.json) / [`diff.json.gz`](https://opensuse.github.io/osdiff/diff.json.gz) | full data set including per-package repos and arches |
+| [`diff.csv`](https://opensuse.github.io/osdiff/diff.csv) | flat table with maintainers |
 
 The ARCHIVES indexes are never committed, since `.gitignore` keeps them out. CI
 caches the compressed ones between runs and passes `--refresh`, so a scheduled
@@ -357,11 +357,11 @@ entry, which is what keeps that fetch weekly rather than nightly.
 
 | Where | What |
 | --- | --- |
-| 🌐 [Live version diff](https://opensuse.github.io/opensuse-version-diff/) | the interactive table, rebuilt every morning |
-| 📦 [diff.json](https://opensuse.github.io/opensuse-version-diff/diff.json) | the full data set, per-package repos and arches included |
-| 📄 [diff.csv](https://opensuse.github.io/opensuse-version-diff/diff.csv) | the flat table, with maintainers |
-| 🚦 [Workflow runs](https://github.com/openSUSE/opensuse-version-diff/actions/workflows/pages.yml) | what the last rebuild did, and its logs |
-| 🐛 [Issues](https://github.com/openSUSE/opensuse-version-diff/issues) | a wrong version, a missing package, an idea |
+| 🌐 [Live version diff](https://opensuse.github.io/osdiff/) | the interactive table, rebuilt every morning |
+| 📦 [diff.json](https://opensuse.github.io/osdiff/diff.json) | the full data set, per-package repos and arches included |
+| 📄 [diff.csv](https://opensuse.github.io/osdiff/diff.csv) | the flat table, with maintainers |
+| 🚦 [Workflow runs](https://github.com/openSUSE/osdiff/actions/workflows/pages.yml) | what the last rebuild did, and its logs |
+| 🐛 [Issues](https://github.com/openSUSE/osdiff/issues) | a wrong version, a missing package, an idea |
 | 🔭 [Repology](https://repology.org/repository/opensuse_tumbleweed) | where the Upstream column comes from |
 | 🦎 [PackageHub](https://src.opensuse.org/products/PackageHub) | where the maintainer names come from |
 

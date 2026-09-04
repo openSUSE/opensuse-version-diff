@@ -149,7 +149,7 @@ LEAP_PROBE = [f"16.{minor}" for minor in range(0, 10)]
 
 # Sent on every HTTP request so download.opensuse.org admins can attribute the
 # traffic (and reach the project) if it ever becomes a nuisance.
-PROJECT_URL = "https://github.com/openSUSE/opensuse-version-diff"
+PROJECT_URL = "https://github.com/openSUSE/osdiff"
 USER_AGENT = f"osdiff/1.0 (+{PROJECT_URL})"
 
 # Maintainership comes from the PackageHub product repo.  Cloning it over git
