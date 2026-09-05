@@ -1,0 +1,31 @@
+[project]
+name = "osdiff"
+version = "1.0.0"
+description = "Compare source package versions between openSUSE distributions"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["opensuse", "tumbleweed", "leap", "rpm", "packaging", "versions"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Software Distribution",
+]
+
+[project.urls]
+Homepage = "https://opensuse.github.io/opensuse-version-diff/"
+Source = "https://github.com/openSUSE/opensuse-version-diff"
+Issues = "https://github.com/openSUSE/opensuse-version-diff/issues"
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]

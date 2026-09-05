@@ -2,10 +2,12 @@
 """Tests for the version normalization rules.
 
 These three rules decide whether a package reads as behind, ahead or level, so
-they get tested both ways: that they fire on the schemes they are for, and —
-more importantly — that they stay out of the way everywhere else.
+they get tested both ways: that they fire on the schemes they are for, and,
+more importantly, that they stay out of the way everywhere else.
 
-    python3 -m unittest -v test_osdiff
+Run them from the top of the checkout:
+
+    python3 -m unittest discover -v -s tests
 """
 
 import html
@@ -159,7 +161,7 @@ class StatusLegend(unittest.TestCase):
     def page(self, extras=(), upstream=True):
         import io
         st = osdiff.statuses(self.TW, self.LEAP, upstream)
-        counts = {s: 1 for s in st.values()}
+        counts = dict.fromkeys(st.values(), 1)
         vcols = [("left", "Tumbleweed"), ("right", "Leap 16.1")]
         totals = {"total": 1, "left": 1, "right": 1, "both": 1,
                   "extras": [1] * len(extras)}

@@ -38,6 +38,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Only x86_64 and noarch are compared.  Tumbleweed's ARCHIVES index covers no
 # other arch, so pulling in Leap's aarch64/ppc64le/s390x packages would only
@@ -64,7 +65,7 @@ NON_ARCH_DIRS = frozenset({"boot", "src", "nosrc", "repodata", "media.1", "EFI"}
 
 # Status values.  Keep the first word greppable and stable: whatever distros are
 # compared, `grep Older` always means "the compared distro is behind".
-def statuses(left: "Distro", right: "Distro", upstream: bool = False) -> dict:
+def statuses(left: Distro, right: Distro, upstream: bool = False) -> dict:
     """The status vocabulary for this run.
 
     `Perfection` only exists when there is an upstream column to earn it
@@ -111,40 +112,23 @@ def _repos(base, oss_path, names=("oss", "non-oss")) -> list:
     ]
 
 
-def _distro(key, label, tag, base, oss_path) -> Distro:
-    """Both repositories of one distribution."""
-    return Distro(key, label, tag, _repos(base, oss_path))
-
-
-DISTROS = {
-    "tumbleweed": _distro(
-        "tumbleweed",
-        "Tumbleweed",
-        "TW",
-        "https://download.opensuse.org/tumbleweed/repo",
-        "ARCHIVES_TW",
-    ),
-    "leap161": _distro(
-        "leap161",
-        "Leap 16.1",
-        "Leap",
-        "https://download.opensuse.org/distribution/leap/16.1/repo",
-        "ARCHIVES_161",
-    ),
-    "leap160": _distro(
-        "leap160",
-        "Leap 16.0",
-        "Leap160",
-        "https://download.opensuse.org/distribution/leap/16.0/repo",
-        "ARCHIVES_160",
-    ),
-}
-
-# --discover probes for Leap releases that do not have an entry above yet, so a
+TW_BASE = "https://download.opensuse.org/tumbleweed/repo"
+# --discover probes for Leap releases that do not have an entry below yet, so a
 # 16.2 shows up in the published table on the day its repository goes live
 # instead of on the day somebody remembers to patch this file.
 LEAP_BASE = "https://download.opensuse.org/distribution/leap"
 LEAP_PROBE = [f"16.{minor}" for minor in range(0, 10)]
+
+DISTROS = {
+    d.key: d
+    for d in (
+        Distro("tumbleweed", "Tumbleweed", "TW", _repos(TW_BASE, "ARCHIVES_TW")),
+        Distro("leap161", "Leap 16.1", "Leap",
+               _repos(f"{LEAP_BASE}/16.1/repo", "ARCHIVES_161")),
+        Distro("leap160", "Leap 16.0", "Leap160",
+               _repos(f"{LEAP_BASE}/16.0/repo", "ARCHIVES_160")),
+    )
+}
 
 
 # Sent on every HTTP request so download.opensuse.org admins can attribute the
@@ -342,7 +326,7 @@ def normalize_version(name: str, version: str) -> tuple:
     return v, tuple(rules)
 
 
-def evr_cmp(a: "Package", b: "Package", with_release: bool) -> int:
+def evr_cmp(a: Package, b: Package, with_release: bool) -> int:
     """Compare two packages, optionally including the release."""
     ra = a.release if with_release else ""
     rb = b.release if with_release else ""
@@ -390,13 +374,18 @@ def _request(url: str, method: str = "GET") -> urllib.request.Request:
     return urllib.request.Request(url, method=method, headers={"User-Agent": USER_AGENT})
 
 
+def _meta(headers) -> dict:
+    """What `--refresh` compares: the two headers that say a file moved."""
+    return {
+        "last_modified": headers.get("Last-Modified"),
+        "size": headers.get("Content-Length"),
+    }
+
+
 def _remote_meta(url: str) -> dict:
     """Last-Modified/size of the remote file, via a HEAD request."""
     with urllib.request.urlopen(_request(url, "HEAD"), timeout=60) as resp:
-        return {
-            "last_modified": resp.headers.get("Last-Modified"),
-            "size": resp.headers.get("Content-Length"),
-        }
+        return _meta(resp.headers)
 
 
 def _exists(url: str) -> bool:
@@ -480,10 +469,7 @@ def fetch(repo: Repo, quiet: bool = False, refresh: bool = False) -> str:
                 open(tmp, "wb") as out:
             shutil.copyfileobj(resp, out)
             if remote is None:
-                remote = {
-                    "last_modified": resp.headers.get("Last-Modified"),
-                    "size": resp.headers.get("Content-Length"),
-                }
+                remote = _meta(resp.headers)
     except (urllib.error.URLError, OSError) as err:
         # A mirror hiccup must not fail a scheduled rebuild when we already
         # have a usable copy; only a cold start has nothing to fall back on.
@@ -520,8 +506,8 @@ def _scan(buf, repo_name: str, arches, pkgs: dict) -> None:
     """Collect every `Source RPM :` line in `buf`, which must start on a line.
 
     Anchoring the regex on the rare literal and only then walking back to the
-    line start is what keeps this quick: a line-anchored `^\\./…` pattern gives
-    byte-identical results but takes 8.2 s where this takes 0.6 s, because the
+    line start is what keeps this quick: a line-anchored `^\\./…` pattern finds
+    exactly the same packages but takes 8.2 s where this takes 0.6 s, because the
     engine then has to try every one of the millions of lines.
     """
     for m in SRCRPM_RE.finditer(buf):
@@ -790,7 +776,7 @@ def compare(left: dict, right: dict, extras: list, with_release: bool,
     """
     rows = []
     names = set(left) | set(right)
-    for _distro_, pkgs in extras:
+    for _distro, pkgs in extras:
         names |= set(pkgs)
     for name in sorted(names):
         lv = left.get(name)
@@ -916,7 +902,9 @@ def emit_csv(rows, vcols, out, maintainers=False) -> None:
     w.writerow(head + ["maintainers"] if maintainers else head)
     for r in rows:
         row = [r["status"], r["name"]] + [r[key] for key, _label in vcols]
-        w.writerow(row + [" ".join(r["maintainers"])] if maintainers else row)
+        if maintainers:
+            row.append(" ".join(r["maintainers"]))
+        w.writerow(row)
 
 
 def _distro_meta(d: Distro) -> dict:
@@ -967,208 +955,48 @@ def emit_json(rows, left, right, extras, counts, out, totals) -> None:
     out.write("\n")
 
 
-HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>__TITLE__</title>
-<link rel="icon" href="https://static.opensuse.org/favicon.svg" type="image/svg+xml">
-<style>
-  /* openSUSE brand palette.  The bright brand hues are legible on the dark
-     maple-maroon surface but none of them reaches 4.5:1 on bagel-beige, so
-     light mode uses same-hue steps darkened until they pass.
+# The page itself lives in templates/page.html, next to this script, so the
+# markup, CSS and JS can be edited (and syntax-highlighted) as what they are.
+# Placeholders are __UPPERCASE__ and every one of them must be filled.
+PAGE_TEMPLATE = Path(__file__).resolve().parent / "templates" / "page.html"
+_PLACEHOLDER_RE = re.compile(r"__([A-Z_]+)__")
 
-     Status colours read as a verdict, not a rainbow: Geeko Green for Same
-     because level is the good outcome, Radish Red for Older, and chameleon's
-     orange (#b96a35) for Newer — Leap ahead of Tumbleweed is not an error but
-     it is a question, usually "did this skip Factory first?".  Red and orange
-     sit ~18 degrees of hue apart with clearly different saturation, which is
-     what keeps the two apart at 13px. */
-  :root {
-    --geeko-green: #42cd42; --plum-purple: #a498ff; --radish-red: #ff5b45;
-    --bagel-beige: #fff8ee; --gabbro-gray: #b8aeab; --maple-maroon: #301a14;
 
-    --bg: #fff8ee; --surface: #f4ece3; --fg: #301a14;
-    --muted: #6d5d58; --line: #d8cfc9; --accent: #00631f; --ring: #42cd42;
-    --older: #c33320; --newer: #9c5a2a; --same: #00631f;
-    --only-l: #7465c7; --only-r: #00668c;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #301a14; --surface: #3c2722; --fg: #fff8ee;
-      --muted: #b8aeab; --line: #56433e; --accent: #42cd42; --ring: #42cd42;
-      --older: #ff5b45; --newer: #dd9155; --same: #42cd42;
-      --only-l: #a498ff; --only-r: #00c8ff;
-    }
-  }
-  html { border-top: 4px solid var(--geeko-green); }
-  body { background: var(--bg); color: var(--fg); margin: 0 auto; max-width: 1400px;
-         padding: 2rem 1.5rem 4rem; font: 14px/1.5 system-ui, sans-serif; }
-  header { display: flex; align-items: baseline; justify-content: space-between;
-           gap: 1rem; flex-wrap: wrap; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  /* Decorative Geeko next to the title; alt="" keeps it out of the heading
-     text for screen readers, and a broken CDN leaves the layout intact. */
-  h1 img { width: 1.4em; height: 1.4em; vertical-align: -.3em; margin-right: .35rem; }
-  p.sub { color: var(--muted); margin: 0 0 .35rem; }
-  p.sub strong { color: var(--fg); }
-  p.breakdown { margin-bottom: 1.5rem; }
-  p.breakdown span { font-weight: 600; }
-  a { color: var(--accent); text-underline-offset: 2px; }
-  a:hover { color: var(--plum-purple); }
-  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 2px solid var(--geeko-green);
-           color: var(--muted); font-size: .85rem; }
-  footer ul { margin: .4rem 0 0; padding-left: 1.2rem; }
-  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; position: sticky;
-         top: 0; background: var(--bg); padding: .75rem 0; border-bottom: 1px solid var(--line); }
-  input, select { font: inherit; padding: .4rem .6rem; border: 1px solid var(--line);
-                  border-radius: 6px; background: var(--surface); color: var(--fg); }
-  input:focus-visible, select:focus-visible { outline: 2px solid var(--ring);
-                  outline-offset: 1px; border-color: var(--ring); }
-  input { flex: 1 1 16rem; }
-  table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-  th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid var(--line);
-           vertical-align: top; }
-  th { cursor: pointer; user-select: none; white-space: nowrap; font-size: .8rem;
-       letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
-       background: var(--surface); border-bottom: 2px solid var(--gabbro-gray); }
-  th:hover { color: var(--plum-purple); }
-  tbody tr:hover { background: var(--surface); }
-  td.v { font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden;
-         text-overflow: ellipsis; }
-  td.v.norm, .norm-eg { text-decoration: underline dotted var(--muted);
-                        text-underline-offset: .25em; }
-  sup.ports { font-family: system-ui, sans-serif; font-size: .6rem; color: var(--muted);
-              border: 1px solid var(--line); border-radius: .5rem; padding: 0 .3em;
-              vertical-align: .35em; }
-  td.m { color: var(--muted); font-size: .85em; max-width: 18rem; overflow: hidden;
-         text-overflow: ellipsis; white-space: nowrap; }
-  .status { font-weight: 600; white-space: nowrap; }
-  .s-Older { color: var(--older); }
-  .s-Newer { color: var(--newer); }
-  .s-Same  { color: var(--same); font-weight: 400; }
-  /* Same and Perfection share the green; bold and a mark are what separate
-     "level with Tumbleweed" from "level with everyone".  The mark is CSS only,
-     so the status string stays plain ASCII for grep, CSV and the filter. */
-  .s-Perfection { color: var(--same); }
-  .s-Perfection::after { content: " ✦"; opacity: .65; }
-  .s-OnlyL { color: var(--only-l); }
-  .s-OnlyR { color: var(--only-r); }
-  #count { color: var(--muted); margin: .75rem 0; }
-  /* The statuses are the whole point of the table, and a hover tooltip is not
-     discoverable — you have to already suspect there is something to read.
-     Closed by default so it costs one line until somebody wants it. */
-  details.legend { margin: 0 0 1.25rem; }
-  details.legend summary { cursor: pointer; color: var(--muted); width: max-content; }
-  details.legend summary:hover { color: var(--plum-purple); }
-  details.legend summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-  details.legend dl { display: grid; grid-template-columns: max-content 1fr;
-                      gap: .35rem 1.25rem; margin: .6rem 0 0; padding: .8rem 1rem;
-                      background: var(--surface); border: 1px solid var(--line);
-                      border-radius: 6px; }
-  details.legend dt { white-space: nowrap; }
-  details.legend dd { margin: 0; color: var(--muted); }
-  @media (max-width: 44rem) {
-    details.legend dl { grid-template-columns: 1fr; gap: .15rem; }
-    details.legend dd { margin-bottom: .6rem; }
-  }
-</style>
-</head>
-<body>
-<header>
-  <h1><img src="https://static.opensuse.org/favicon.svg" alt="">__TITLE__</h1>
-  <p><a href="__PROJECT__/issues/new">Report an issue</a> ·
-     <a href="__PROJECT__#readme">README</a> ·
-     <a href="__PROJECT__">source on GitHub</a></p>
-</header>
-<p class="sub">__SUB__</p>
-<p class="sub breakdown">__BREAKDOWN__</p>
-<details class="legend">
-  <summary>What do the statuses mean?</summary>
-  <dl>__LEGEND__</dl>
-</details>
-<div class="bar">
-  <input id="q" type="search" placeholder="Filter by package or maintainer…" autofocus>
-  <select id="st"><option value="">All statuses</option>__OPTIONS__</select>
-</div>
-<p id="count"></p>
-<table>
-  <colgroup>__COLGROUP__</colgroup>
-  <thead><tr>__THEAD__</tr></thead>
-  <tbody id="tb"></tbody>
-</table>
-<footer>
-  <p>Generated __GENERATED__ by
-     <a href="__PROJECT__">osdiff</a>. Only the upstream version is compared, not
-     the rpm release. Maintainers are known for PackageHub packages only.
-     A <span class="norm-eg">dotted version</span> was rewritten before
-     comparing — a CPAN decimal, a missing <code>~</code> before a pre-release
-     or a stray <code>v</code>; hover it to see what it was compared as.
-     __PORTSNOTE__</p>
-  <p>Data:</p>
-  <ul>__SOURCES__
-    <li>Downloads: <a href="diff.json">diff.json</a> ·
-        <a href="diff.json.gz">diff.json.gz</a> · <a href="diff.csv">diff.csv</a></li>
-  </ul>
-</footer>
-<script>
-const DATA = __DATA__;
-const tb = document.getElementById('tb'), q = document.getElementById('q'),
-      st = document.getElementById('st'), count = document.getElementById('count');
-let rows = DATA, sortKey = null, sortDir = 1;
-// Version columns, left to right; the row keys they read.
-const VCOLS = __VCOLS__;
-const ONLY_LEFT = "__ONLY_LEFT__";
-// What each status means, on hover — the orange one in particular is a
-// question rather than a verdict, and the tooltip is where that fits.
-const HINTS = __HINTS__;
-// Both "only" statuses start with the same word, so they need telling apart.
-function cls(s) {
-  if (s.startsWith('Only')) return s === ONLY_LEFT ? 's-OnlyL' : 's-OnlyR';
-  return 's-' + s.split('-')[0];
-}
-function esc(s) { return String(s).replace(/[&<>"]/g, c =>
-  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function render() {
-  const needle = q.value.toLowerCase(), status = st.value;
-  let view = rows.filter(r => (!status || r.status === status) &&
-      (!needle || r.name.toLowerCase().includes(needle) ||
-                  r.maint.toLowerCase().includes(needle)));
-  if (sortKey) {
-    const num = VCOLS.includes(sortKey);  // numeric only for versions
-    view = [...view].sort((a, b) =>
-      sortDir * String(a[sortKey]).localeCompare(String(b[sortKey]), 'en', {numeric: num}));
-  }
-  count.textContent = view.length.toLocaleString('en-US') + ' of ' +
-                      rows.length.toLocaleString('en-US') + ' source packages';
-  tb.innerHTML = view.map(r =>
-    `<tr><td class="status ${cls(r.status)}" title="${esc(HINTS[r.status] || '')}"` +
-    `>${esc(r.status)}</td><td>${esc(r.name)}</td>` +
-    VCOLS.map(k => {
-      // r.n[k] is what this cell was actually compared as; say so rather than
-      // quietly showing one version and comparing another.
-      const n = r.n && r.n[k];
-      const t = n ? `${r[k]} — compared as ${n}` : r[k];
-      // r.p names the architectures a ports-only package is built for; the
-      // arch list goes in the tooltip so the column keeps its width.
-      const p = k === 'left' && r.p
-        ? ` <sup class="ports" title="not on x86_64/noarch; built for ${esc(r.p)}"` +
-          `>ports</sup>` : '';
-      return `<td class="v${n ? ' norm' : ''}" title="${esc(t)}"` +
-             `>${esc(r[k]) || '—'}${p}</td>`;
-    }).join('') +
-    `<td class="m" title="${esc(r.maint)}">${esc(r.maint) || '—'}</td></tr>`).join('');
-}
-q.oninput = st.onchange = render;
-document.querySelectorAll('th').forEach(th => th.onclick = () => {
-  const k = th.dataset.k;
-  sortDir = sortKey === k ? -sortDir : 1; sortKey = k; render();
-});
-render();
-</script>
-</body>
-</html>
-"""
+def render_page(values: dict) -> str:
+    """Fill the page template in one pass, so no value can be substituted into.
+
+    A missing placeholder is a bug in this file rather than something to paper
+    over at build time, so it stops the run instead of shipping a page with
+    __DATA__ printed in it.
+    """
+    try:
+        template = PAGE_TEMPLATE.read_text(encoding="utf-8")
+    except OSError as err:
+        raise SystemExit(f"cannot read the page template: {err}") from err
+
+    def fill(m):
+        try:
+            return values[m.group(1)]
+        except KeyError:
+            raise SystemExit(
+                f"page template wants {m.group(0)}, which is not set"
+            ) from None
+
+    return _PLACEHOLDER_RE.sub(fill, template)
+
+
+def _script_json(value) -> str:
+    """JSON safe to inline in a <script>.
+
+    A `</` in a string would end the script block early and `&` is a live
+    character in HTML, so both are written as their JSON escapes.
+    """
+    return (
+        json.dumps(value)
+        .replace("</", "<\\/")
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+    )
 
 
 def _status_cls(status: str, st: dict) -> str:
@@ -1180,7 +1008,7 @@ def _status_cls(status: str, st: dict) -> str:
 
 def _family(labels) -> str:
     """The words the compared distros' labels share, e.g. Leap 16.1 + 16.0 -> Leap."""
-    words = [l.split() for l in labels]
+    words = [label.split() for label in labels]
     common = []
     for parts in zip(*words):
         if len(set(parts)) != 1:
@@ -1315,30 +1143,28 @@ def emit_html(rows, left, right, extras, vcols, counts, out, totals, st) -> None
             f"Repology</a> — the newest version it sees in <em>any</em> distribution, "
             "not a release feed of the project itself</li>"
         )
-    page = HTML_TEMPLATE
-    for needle, value in (
-        ("__TITLE__", html.escape(title)),
-        ("__SUB__", sub),
-        ("__BREAKDOWN__", breakdown),
-        ("__LEGEND__", legend),
-        ("__COLGROUP__", colgroup),
-        ("__THEAD__", thead),
-        ("__VCOLS__", json.dumps([key for key, _label in vcols])),
-        ("__PROJECT__", html.escape(PROJECT_URL)),
-        ("__GENERATED__", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
-        ("__SOURCES__", sources),
-        ("__OPTIONS__", options),
-        ("__ONLY_LEFT__", html.escape(st["only_left"])),
-        ("__PORTSNOTE__",
-         f'A <sup class="ports">ports</sup> badge means {html.escape(left.label)} '
-         "only builds that package for another architecture, so it is absent "
-         "from the x86_64/noarch media the rest of the table is built from."
-         if "ports" in totals else ""),
-        ("__HINTS__", json.dumps(hints).replace("<", "\\u003c")),
-        ("__DATA__", json.dumps(slim).replace("</", "<\\/").replace("&", "\\u0026").replace("<", "\\u003c")),
-    ):
-        page = page.replace(needle, value)
-    out.write(page)
+    out.write(render_page({
+        "TITLE": html.escape(title),
+        "SUB": sub,
+        "BREAKDOWN": breakdown,
+        "LEGEND": legend,
+        "COLGROUP": colgroup,
+        "THEAD": thead,
+        "VCOLS": json.dumps([key for key, _label in vcols]),
+        "PROJECT": html.escape(PROJECT_URL),
+        "GENERATED": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "SOURCES": sources,
+        "OPTIONS": options,
+        "ONLY_LEFT": html.escape(st["only_left"]),
+        "PORTSNOTE": (
+            f'A <sup class="ports">ports</sup> badge means {html.escape(left.label)} '
+            "only builds that package for another architecture, so it is absent "
+            "from the x86_64/noarch media the rest of the table is built from."
+            if "ports" in totals else ""
+        ),
+        "HINTS": _script_json(hints),
+        "DATA": _script_json(slim),
+    }))
 
 
 # --------------------------------------------------------------------------
@@ -1524,7 +1350,7 @@ def main(argv=None) -> int:
         upstream,
     )
 
-    counts = {s: 0 for s in st.values()}
+    counts = dict.fromkeys(st.values(), 0)
     for r in rows:
         counts[r["status"]] += 1
 
@@ -1558,7 +1384,9 @@ def main(argv=None) -> int:
         rows = [r for r in rows if any(who in m.lower() for m in r["maintainers"])]
     with_maint_column(rows)
 
-    out = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
+    # Closed in the finally below; a `with` here would have to wrap the whole
+    # emit block twice over, once per branch.
+    out = open(args.output, "w", encoding="utf-8") if args.output else sys.stdout  # noqa: SIM115
     try:
         if args.format == "table":
             emit_table(rows, vcols, out, args.maintainers)
